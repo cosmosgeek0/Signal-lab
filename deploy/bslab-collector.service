@@ -1,0 +1,17 @@
+[Unit]
+Description=CG Signal Lab public-data collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/binance-signal-lab-public
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/bin/bash -lc '.venv/bin/python -m bslab.run --db data/binance_signal_lab.sqlite --top 25'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

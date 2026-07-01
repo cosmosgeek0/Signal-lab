@@ -1,0 +1,17 @@
+[Unit]
+Description=CG Signal Lab ASGI dashboard
+After=network-online.target bslab-collector.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/binance-signal-lab-public
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/bin/bash -lc '.venv/bin/uvicorn web_app:app --host 127.0.0.1 --port 8501'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
