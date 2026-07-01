@@ -132,6 +132,55 @@ Rules: borders are hairline and nearly invisible (`--hairline`); never use fully
 - Controls: basis/funding/score color mode, 25/50/100 bps threshold, sort by abs basis,
   funding, score, or age. Clicking a tile opens the symbol workspace.
 
+## Rendering discipline — no flicker (Sprint 4)
+**A poll must never rebuild the DOM it is not changing.** This is a hard rule, not a
+preference — full `innerHTML` rebuilds on every poll are what made the app flicker.
+
+- **Radar table = keyed reconciliation.** Rows are keyed by symbol and kept as stable
+  `<tr>` nodes (`tbody._nodes` Map). Each poll: reuse the node, update only the cells
+  whose formatted value changed (`td._raw` cache), flash only the price cells that
+  moved (green up / red down, once), and update semantic classes in place. New symbols
+  build a node; departed symbols are removed. Rows never blank, icons never re-request.
+- **Rank change = movement, not blink.** When sort/rank reorders the set, nodes are
+  *moved* with `insertBefore` and glide to their new position via a FLIP transform
+  (`.34s`) — Bitcoin sliding below Ethereum, not the whole list repainting.
+- **Row reveal stagger** runs *only* when the result set changes (sort/filter/page/
+  search), never on a steady poll; the `reveal` class is removed afterward so its
+  fill-mode can't fight FLIP.
+- **Everything else is change-gated.** `setHTMLIfChanged(el, html)` skips the DOM when
+  the rendered string is identical; the activity feed rebuilds only when its event set
+  changes (id signature), never to tick a timestamp. Widgets, tape, metric values, and
+  spotlight update in place. Event handlers are bound once at build, not re-queried
+  each poll.
+- Verify with a `MutationObserver`: during steady polling, **zero `<tr>` are added or
+  removed** (moves excepted); only cell text/class mutates.
+
+## Typography hierarchy (Sprint 4)
+Type scale in tokens: `--fs-hero 22 / --fs-title 15 / --fs-value 15 / --fs-body 12.5 /
+--fs-label 11 / --fs-micro 10`. Three text weights: `--fw-med 500`, `--fw-semi 600`,
+`--fw-bold 700`. **Not everything is gray.** `--text-strong (#0b0e11)` anchors the
+product name, header nav, section titles, symbols, and headline values; `--text` for
+table body; `--muted (#707a8a)` for labels only; colored deltas (green/red/basis)
+reserved for financial meaning. Header icons are near-black and sharp, not faint dust.
+
+## Token badges — never empty
+Missing/broken icon files fall back to a **deterministic colored monogram** (hue hashed
+from the symbol base), 2–4 crisp uppercase letters (QNT, DASH, NFP), high-contrast text
+on a soft tinted disc. Real CC0 icons `<img onerror>` swap to the monogram if the file
+404s. No empty circles, no gray holes, no emoji.
+
+## Default screen organization (Sprint 4)
+The homepage is a calm command center, not a data dump. Removed from the top: the
+6-instrument ticker strip and the 13-block equal-metric statbar (both redundant with
+the widgets + health popovers). Kept, in order: one slim header → slim live tape →
+four compact market-health widgets → tabs → **What matters now** spotlight with the
+reason → radar table → right rail (Market Activity, Watchlist, Selected Symbol).
+The old lower always-on leaderboards are not part of the default Radar page; basis
+leaders live in the table/right rail, funding extremes live in Funding, and raw cache
+health/timeline lives in Data Quality. Detailed data health lives in the header health
+popover, network-badge popover, and Data Quality, not scattered across the page.
+Activity is deduped and rate-limited (no repeated cache-refresh or leader spam).
+
 ## Interaction / motion
 **Minimal does not mean static.** The terminal must feel alive. **Motion must be
 data-driven and purposeful** — it exists to show that data changed, to guide the

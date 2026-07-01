@@ -27,9 +27,13 @@ INDEX_HTML = r"""
       --line: var(--hairline);
       --line-strong: #e0e3e7;
       --line2: rgba(240, 185, 11, .38);
+      --text-strong: #0b0e11;
       --text: #1e2329;
       --muted: #707a8a;
       --dim: #aeb4bd;
+      /* type scale */
+      --fs-hero: 22px; --fs-title: 15px; --fs-value: 15px; --fs-body: 12.5px; --fs-label: 11px; --fs-micro: 10px;
+      --fw-bold: 700; --fw-semi: 600; --fw-med: 500;
       --green: #0ecb81;
       --red: #f6465d;
       --yellow: #f0b90b;
@@ -60,6 +64,7 @@ INDEX_HTML = r"""
       --line: var(--hairline);
       --line-strong: #2f3742;
       --line2: rgba(240, 185, 11, .26);
+      --text-strong: #f5f7fa;
       --text: #eaecef;
       --muted: #848e9c;
       --dim: #5e6673;
@@ -132,10 +137,10 @@ INDEX_HTML = r"""
       width: min(1820px, calc(100vw - 22px));
       margin: 0 auto;
       display: grid;
-      grid-template-columns: minmax(260px, auto) minmax(460px, 1fr) auto;
-      gap: 18px;
+      grid-template-columns: minmax(210px, auto) minmax(520px, 1fr) auto;
+      gap: 16px;
       align-items: center;
-      padding: 10px 0;
+      padding: 8px 0;
     }
     .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
     .logo {
@@ -229,7 +234,7 @@ INDEX_HTML = r"""
       outline: none;
     }
     .nav-action span:last-child { color: var(--muted); font-size: 10px; }
-    .status-row { display: flex; align-items: center; justify-content: flex-end; gap: 7px; flex-wrap: wrap; }
+    .status-row { display: flex; align-items: center; justify-content: flex-end; gap: 7px; flex-wrap: nowrap; min-width: 0; }
     .pill {
       display: inline-flex; align-items: center; gap: 6px;
       border: 0;
@@ -570,6 +575,38 @@ INDEX_HTML = r"""
       background: transparent;
       font-size: 11px;
     }
+    .health-pill {
+      position: relative;
+      color: var(--text);
+      background: color-mix(in srgb, var(--surface-soft) 88%, var(--bg));
+      border: 1px solid var(--hairline-soft);
+    }
+    .health-pill:hover { background: var(--hover); }
+    .health-pop {
+      position: absolute;
+      top: calc(100% + 10px);
+      right: 0;
+      width: 248px;
+      opacity: 0;
+      transform: translateY(6px);
+      pointer-events: none;
+      z-index: 145;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      box-shadow: var(--shadow-lg);
+      padding: 10px 12px;
+      transition: opacity .16s ease, transform .16s ease;
+    }
+    .health-pill:hover .health-pop,
+    .health-pill:focus-visible .health-pop {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    .health-pop .hp-title { font-size: 11px; font-weight: 700; color: var(--text-strong); margin-bottom: 4px; }
+    .health-pop .hp-row { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-bottom: 1px solid var(--hairline-soft); color: var(--muted); font-size: 11px; }
+    .health-pop .hp-row:last-child { border-bottom: 0; }
+    .health-pop .hp-row strong { color: var(--text-strong); font-weight: 600; }
     .src-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 6px var(--accent); flex: 0 0 auto; }
     .icon-btn.has-errors { color: var(--yellow); background: color-mix(in srgb, var(--yellow) 10%, transparent); }
     .seg {
@@ -738,6 +775,22 @@ INDEX_HTML = r"""
     .pager button:disabled { opacity: .4; cursor: default; }
     .pager .spacer { flex: 1; }
     .pager .pinfo { color: var(--muted); font-size: 12px; }
+    #filterChips {
+      justify-content: flex-start;
+      gap: 2px;
+      overflow-x: auto;
+      flex-wrap: nowrap;
+      scrollbar-width: none;
+    }
+    .toolbar {
+      padding: 7px 0;
+      border-bottom: 1px solid var(--hairline-soft);
+    }
+    .toolbar .slider-wrap { justify-content: flex-end; }
+    table { min-width: 1320px; }
+    th, td { font-size: var(--fs-body); font-variant-numeric: tabular-nums; }
+    th { font-size: var(--fs-micro); }
+    tbody tr { height: 38px; }
     /* ---- methodology / footer sections ---- */
     /* ---- de-boxed instrument stat bar (Binance-style, one surface not 12 cards) ---- */
     .statbar { display: flex; flex-wrap: wrap; row-gap: 4px; margin: 2px 0 14px; }
@@ -768,6 +821,7 @@ INDEX_HTML = r"""
       .top-inner { grid-template-columns: minmax(240px, auto) 1fr; }
       .top-nav { grid-column: 1 / -1; justify-content: flex-start; overflow-x: auto; padding-bottom: 2px; }
       .status-row { justify-content: flex-end; }
+      .status-row { flex-wrap: wrap; }
       .section-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 860px) {
@@ -1183,6 +1237,46 @@ INDEX_HTML = r"""
       .desk-print .hide-sm { display: none; }
     }
 
+    /* ============================================================
+       SPRINT 4 — TYPOGRAPHY HIERARCHY, CONTRAST, CRISP MONOGRAMS.
+       Black/near-black anchors, muted secondary, colored deltas only.
+       ============================================================ */
+    /* product identity */
+    h1 { font-size: 16px; font-weight: var(--fw-bold); color: var(--text-strong); letter-spacing: -0.01em; }
+    .logo { font-weight: 800; }
+    /* header nav — crisp, near-black, not gray dust */
+    .nav-link { color: var(--text); font-weight: var(--fw-med); font-size: 12.5px; }
+    .nav-link:hover, .nav-group.active-menu > .nav-link { color: var(--text-strong); }
+    .nav-link .nav-caret { opacity: .5; }
+    /* header icons — sharp and visible, not faint */
+    .status-row .icon-btn { color: var(--text); }
+    .status-row .icon-btn svg { stroke-width: 2; opacity: 1; }
+    .status-row .icon-btn:hover { color: var(--text-strong); background: var(--hover); }
+    .status-row .pill { color: var(--muted); font-size: var(--fs-label); }
+    .status-row .pill strong { color: var(--text-strong); font-weight: var(--fw-semi); }
+    /* section titles — clear, near-black */
+    .section-title { font-size: var(--fs-title); font-weight: var(--fw-semi); color: var(--text-strong); letter-spacing: -0.005em; }
+    .section-sub { font-size: var(--fs-label); color: var(--muted); }
+    /* table header — clearer */
+    th { color: var(--muted); font-weight: var(--fw-semi); font-size: 10.5px; }
+    td { color: var(--text); }
+    td .sym { color: var(--text-strong); font-weight: var(--fw-semi); }
+    /* important numbers get weight; labels stay muted */
+    .spot-big, .detail-title strong, .kv strong, .widget .w-value { color: var(--text-strong); }
+    .metric .value { color: var(--text-strong); font-weight: var(--fw-semi); }
+
+    /* crisp deterministic monogram badges — never empty, never gray noise */
+    .token.mono {
+      background: hsl(var(--h, 210) 78% 90%);
+      color: hsl(var(--h, 210) 62% 28%);
+      border: 0; font-weight: 800; font-size: 8.5px; letter-spacing: .01em;
+    }
+    [data-theme="dark"] .token.mono {
+      background: hsl(var(--h, 210) 40% 24%);
+      color: hsl(var(--h, 210) 78% 76%);
+    }
+    .token-img { object-fit: contain; }
+
     /* ---- prefers-reduced-motion: keep meaning, drop movement ---- */
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
@@ -1213,7 +1307,6 @@ INDEX_HTML = r"""
         <div class="logo">CG</div>
         <div>
           <h1>CG Signal Lab</h1>
-          <div class="subtitle">Binance public spot/perp basis terminal</div>
         </div>
       </div>
       <nav class="top-nav" id="topNav" aria-label="Primary navigation">
@@ -1228,12 +1321,10 @@ INDEX_HTML = r"""
         <div id="megaMenu" role="menu" aria-label="Navigation menu"></div>
       </nav>
       <div class="status-row">
-        <span class="pill source-pill" data-tip="Data source: public Binance market WebSocket streams only. No account keys."><span class="src-dot"></span>Binance Public Streams</span>
+        <span class="pill source-pill" data-tip="Data source: public Binance market WebSocket streams only. No account keys."><span class="src-dot"></span>Binance Public</span>
         <span id="statusPill" class="pill status-pill warming" data-tip="LIVE means the latest public-data snapshot is fresh. STALE means the latest row is older than the age gate.">SYNCING</span>
         <span class="pill mono" data-tip="Coordinated Universal Time for comparing stream and cache timestamps."><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><strong id="utcClock">--:--:--</strong> UTC</span>
-        <span class="pill" data-tip="Age of the latest collector snapshot in the in-memory cache."><svg class="ic" viewBox="0 0 24 24"><path d="M12 8v4l3 2"/><path d="M3.05 11a9 9 0 1 1 .5 4"/><path d="M3 5v4h4"/></svg>Age <strong id="collectorAge">--</strong></span>
-        <span class="pill" data-tip="Symbols currently tracked from the latest public-data cache snapshot."><svg class="ic" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>Symbols <strong id="symbolCount">0</strong></span>
-        <span class="pill" data-tip="Browser latency to /api/state-lite plus cache refresh time when available."><svg class="ic" viewBox="0 0 24 24"><path d="M13 3 4 14h7l-1 7 9-11h-7z"/></svg><strong id="latency">--</strong></span>
+        <button id="healthPill" class="pill health-pill" type="button" title="Open Data Quality"><svg class="ic" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>Data <strong id="symbolCount">0</strong><div id="healthPop" class="health-pop"></div></button>
         <button id="searchBtn" class="icon-btn" title="Search ( / )"><svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></button>
         <button id="errorToggle" class="icon-btn" title="API status &amp; recent errors"><svg class="ic" viewBox="0 0 24 24"><path d="M10.3 4 2.5 18a2 2 0 0 0 1.7 3h15.6a2 2 0 0 0 1.7-3L13.7 4a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></button>
         <button id="themeToggle" class="icon-btn" title="Toggle theme ( D )"></button>
@@ -1241,7 +1332,6 @@ INDEX_HTML = r"""
         <button id="helpBtn" class="icon-btn" title="Keyboard shortcuts ( ? )"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4"/><path d="M12 17h.01"/></svg></button>
       </div>
     </div>
-    <div class="ticker"><div id="tickerTrack" class="ticker-track"><div class="tick-item"><span class="muted">Ticker warming...</span></div></div></div>
     <div class="tape">
       <div class="tape-inner">
         <span class="tape-label" data-tip="A live headline generated from the current public-data snapshot. It rotates as the market state changes."><span class="live-dot"></span><span class="mood-chip" id="moodChip" data-mood="calm" data-tip="Overall market mood derived from basis breadth and funding extremes across tracked symbols.">CALM</span><span class="headline" id="headline"><span class="hl-text" id="headlineText">Scanning Binance public spot/perp streams</span></span></span>
@@ -1253,7 +1343,6 @@ INDEX_HTML = r"""
 
   <main class="shell">
     <section class="main">
-      <section id="overview" class="statbar"></section>
       <section id="widgets" class="widgets" aria-label="Live market visuals"></section>
       <nav id="tabs" class="tabs">
         <button class="tab-btn" data-tab="radar"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="10"/></svg><span class="tab-no">1</span> Radar</button>
@@ -1264,7 +1353,6 @@ INDEX_HTML = r"""
         <button class="tab-btn" data-tab="detail"><svg class="ic" viewBox="0 0 24 24"><path d="M4 19V5"/><path d="M4 15l4-4 4 3 6-7"/></svg><span class="tab-no">6</span> Symbol Detail</button>
         <button class="tab-btn" data-tab="quality"><svg class="ic" viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6z"/><path d="m9 12 2 2 4-4"/></svg><span class="tab-no">7</span> Data Quality</button>
         <button class="tab-btn" data-tab="pulse"><svg class="ic" viewBox="0 0 24 24"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg><span class="tab-no">8</span> Futures Pulse</button>
-        <button class="tab-btn" data-tab="desk"><svg class="ic" viewBox="0 0 24 24"><path d="M4 19V5"/><path d="M4 12h16"/><path d="M8 8h3v8H8z"/><path d="M14 6h3v12h-3z"/></svg><span class="tab-no">9</span> Desk</button>
         <span class="tab-underline" id="tabUnderline"></span>
       </nav>
 
@@ -1410,7 +1498,7 @@ INDEX_HTML = r"""
                 <button id="detailCopy" title="Copy selected symbol"><svg class="ic" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/></svg>Copy</button>
                 <button id="detailStar" class="star" title="Favorite selected symbol">☆</button>
               </div>
-              <div class="detail-note">Use the global search or any table, heatmap, ticker, or watchlist row to change the selected instrument. No raw symbol dropdown is rendered.</div>
+              <div class="detail-note">Use search or any table, heatmap, or watchlist row to change the selected instrument. No raw symbol dropdown is rendered.</div>
             </div>
             <div id="detailKvs" class="kv-grid"></div>
             <div class="section-head"><div><div class="section-title">Book &amp; basis</div><div class="section-sub">Top-of-book spot vs perp</div></div></div>
@@ -1498,6 +1586,10 @@ INDEX_HTML = r"""
           <div class="plane"><div class="section-head"><div class="section-title">Selftest</div><button id="runSelftest">Run</button></div><div id="selftestBox" class="mini-list"></div></div>
           <div class="plane"><div class="section-head"><div class="section-title">Debug Links</div></div><div class="empty"><a class="blue" href="/api/debug" target="_blank">/api/debug</a><br><a class="blue" href="/api/selftest" target="_blank">/api/selftest</a><br><span class="muted">Use scripts/web_debug.py for CLI DB inspection.</span></div></div>
         </div>
+        <section id="qualityTimelineSection" class="plane section" style="margin-top:18px">
+          <div class="section-head"><div><div class="section-title">Data Quality Timeline</div><div class="section-sub">Latest cache and collector events from the in-memory state</div></div></div>
+          <div id="qualityTimeline" class="timeline"></div>
+        </section>
       </section>
 
       <section id="tab-pulse" class="tab-panel">
@@ -1505,17 +1597,6 @@ INDEX_HTML = r"""
           <div class="plane"><div class="section-head"><div><div class="section-title">Market Regime</div><div class="section-sub">Derived from SQLite live rows</div></div></div><div id="regimeBox" class="mini-list"></div></div>
           <div class="plane"><div class="section-head"><div><div class="section-title">Optional Futures Enrichment</div><div class="section-sub">Public Binance REST, cached conservatively</div></div><button id="refreshEnrichment">Refresh</button></div><div id="enrichmentBox" class="mini-list"></div></div>
         </div>
-      </section>
-
-      <section class="section-grid" aria-label="Market research summaries">
-        <div class="plane"><div class="section-head"><div><div class="section-title">Market Regimes Summary</div><div class="section-sub">Breadth and basis state</div></div></div><div id="marketRegimeSummary" class="mini-list"></div></div>
-        <div class="plane"><div class="section-head"><div><div class="section-title">Wide Basis Leaderboard</div><div class="section-sub">Strongest current dislocations</div></div></div><div id="wideBasisBoard" class="mini-list"></div></div>
-        <div class="plane"><div class="section-head"><div><div class="section-title">Funding Extremes</div><div class="section-sub">Highest absolute public funding</div></div></div><div id="fundingExtremesBoard" class="mini-list"></div></div>
-        <div class="plane"><div class="section-head"><div><div class="section-title">Recently Stale Symbols</div><div class="section-sub">Aging or incomplete feeds</div></div></div><div id="staleBoard" class="mini-list"></div></div>
-      </section>
-      <section id="qualityTimelineSection" class="plane section" style="margin-top:18px">
-        <div class="section-head"><div><div class="section-title">Data Quality Timeline</div><div class="section-sub">Latest cache and collector events from the in-memory state</div></div></div>
-        <div id="qualityTimeline" class="timeline"></div>
       </section>
 
       <section id="methodology" class="plane section" style="margin-top:18px">
@@ -1574,12 +1655,11 @@ INDEX_HTML = r"""
         <div class="help-row"><span>Symbol detail</span><kbd>6</kbd></div>
         <div class="help-row"><span>Data quality</span><kbd>7</kbd></div>
         <div class="help-row"><span>Futures pulse</span><kbd>8</kbd></div>
-        <div class="help-row"><span>Power desk</span><kbd>9</kbd></div>
         <div class="help-row"><span>Fullscreen detail chart</span><kbd>F</kbd></div>
         <div class="help-row"><span>This help</span><kbd>?</kbd></div>
         <div class="help-row"><span>Close overlay</span><kbd>Esc</kbd></div>
       </div>
-      <div class="help-note">Public Binance spot + USD-M perpetual data only. No API keys, no account access, no order entry, no trading. Click any row, tile, ticker, or Desk print to focus a symbol; click the star to pin a watchlist. Tables, search, filters, theme, and selection survive every refresh.</div>
+      <div class="help-note">Public Binance spot + USD-M perpetual data only. No API keys, no account access, no order entry, no trading. Click any row, tile, or watchlist item to focus a symbol; click the star to pin a watchlist. Tables, search, filters, theme, and selection survive every refresh.</div>
     </div>
   </div>
 
@@ -1696,6 +1776,10 @@ INDEX_HTML = r"""
       enrichmentAt: 0,
     };
     const $ = (id) => document.getElementById(id);
+    // Anti-flicker: only touch the DOM when the rendered value actually changed.
+    function setHTMLIfChanged(el, html) { if (!el) return false; if (el._h !== html) { el._h = html; el.innerHTML = html; return true; } return false; }
+    function setTextIfChanged(el, text) { if (!el) return false; text = String(text ?? ""); if (el.textContent !== text) { el.textContent = text; return true; } return false; }
+    function setClassIfChanged(el, cls) { if (!el) return false; if (el.className !== cls) { el.className = cls; return true; } return false; }
     const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
     const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
     const fmt = (n, d=2) => n === null || n === undefined || Number.isNaN(Number(n)) ? "--" : Number(n).toLocaleString(undefined, {maximumFractionDigits:d});
@@ -1712,13 +1796,16 @@ INDEX_HTML = r"""
       if (s < 3600) return `${Math.round(s / 60)}m`;
       return `${Math.round(s / 3600)}h`;
     };
-    const tokenLetters = (symbol) => String(symbol || "--").replace(/USDT|USDC|BUSD|FDUSD$/,"").slice(0, 3);
     const ICON_SET = new Set((Array.isArray(window.__CG_ICONS__) ? window.__CG_ICONS__ : []).map(s => String(s).toUpperCase()));
-    const iconBase = (symbol) => String(symbol || "").toUpperCase().replace(/(USDT|USDC|BUSD|FDUSD)$/,"");
+    const iconBase = (symbol) => String(symbol || "").toUpperCase().replace(/(USDT|USDC|BUSD|FDUSD|USD)$/, "");
+    const tokenLetters = (symbol) => { const b = iconBase(symbol) || "TKN"; return b.length <= 4 ? b : b.slice(0, 3); };
+    function hashHue(s) { let h = 0; s = String(s || ""); for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return h % 360; }
+    // Missing/broken icon files fall back to a crisp colored monogram — never an empty circle.
+    window.cgIconFallback = function (img) { const s = document.createElement("span"); s.className = "token mono"; s.style.setProperty("--h", img.dataset.hue); s.setAttribute("aria-hidden", "true"); s.textContent = img.dataset.letters; img.replaceWith(s); };
     function tokenIcon(symbol) {
-      const base = iconBase(symbol);
-      if (ICON_SET.has(base)) return `<img class="token-img" src="/static/icons/${base.toLowerCase()}.svg" alt="" loading="lazy" width="20" height="20">`;
-      return `<span class="token" aria-hidden="true">${esc(tokenLetters(symbol))}</span>`;
+      const base = iconBase(symbol), letters = tokenLetters(symbol), hue = hashHue(base || symbol);
+      if (ICON_SET.has(base)) return `<img class="token-img" data-hue="${hue}" data-letters="${esc(letters)}" src="/static/icons/${base.toLowerCase()}.svg" alt="" loading="lazy" width="20" height="20" onerror="cgIconFallback(this)">`;
+      return `<span class="token mono" style="--h:${hue}" aria-hidden="true">${esc(letters)}</span>`;
     }
     function priceDecimals(n) { const a = Math.abs(Number(n) || 0); if (!a) return 2; if (a >= 1000) return 2; if (a >= 100) return 3; if (a >= 1) return 4; if (a >= 0.01) return 6; return 8; }
     // Coinbase/Uniswap/TradingView-style micro price: 0.00000042 -> 0.0<sub>5</sub>42
@@ -1898,15 +1985,15 @@ INDEX_HTML = r"""
       // Prolonged core-poll failures: show SYNCING (reconnecting), not a red wall.
       if (degraded && cls !== "error") { label = "SYNCING"; cls = "warming"; }
       const pill = $("statusPill");
-      pill.textContent = label;
-      pill.className = "pill status-pill " + cls;
-      $("collectorAge").textContent = seconds(age);
-      $("symbolCount").textContent = health?.tracked_symbols ?? 0;
+      setTextIfChanged(pill, label);
+      setClassIfChanged(pill, "pill status-pill " + cls);
+      const ageEl = $("collectorAge"); if (ageEl) setTextIfChanged(ageEl, seconds(age));
+      const symEl = $("symbolCount"); if (symEl) setTextIfChanged(symEl, health?.tracked_symbols ?? 0);
       const cm = state.cacheMetrics;
-      const latency = state.lastLatencyMs == null ? "--" : `${state.lastLatencyMs.toFixed(0)}ms`;
-      $("latency").textContent = cm && cm.last_refresh_ms != null ? `${latency} · cache ${Math.round(cm.last_refresh_ms)}ms` : latency;
+      const latEl = $("latency");
+      if (latEl) { const latency = state.lastLatencyMs == null ? "--" : `${state.lastLatencyMs.toFixed(0)}ms`; setTextIfChanged(latEl, cm && cm.last_refresh_ms != null ? `${latency} · cache ${Math.round(cm.last_refresh_ms)}ms` : latency); }
       $("errorToggle").classList.toggle("has-errors", state.errors.length > 0);
-      $("errorDrawer").innerHTML = state.errors.length ? state.errors.map(esc).join("<br>") : "No recent errors. Last-good data stays on screen during transient hiccups.";
+      setHTMLIfChanged($("errorDrawer"), state.errors.length ? state.errors.map(esc).join("<br>") : "No recent errors. Last-good data stays on screen during transient hiccups.");
     }
     function prefersReducedMotion() { return state.motionMode === "reduced" || (window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches); }
     function syncSegThumb(seg) {
@@ -1965,8 +2052,9 @@ INDEX_HTML = r"""
       ];
     }
     function renderOverview() {
-      const defs = ovDefs();
       const host = $("overview");
+      if (!host) return;   // metric statbar retired in Sprint 4 (health lives in widgets + net badge)
+      const defs = ovDefs();
       if (host.childElementCount !== defs.length) {
         host.innerHTML = defs.map(d => `<div class="stat" data-skey="${d.k}"><div class="k">${esc(d.label)}</div><div class="v ${d.cls || ""}">${esc(d.val)}</div><div class="s">${esc(d.hint)}</div></div>`).join("");
         defs.forEach(d => { const v = host.querySelector(`.stat[data-skey="${d.k}"] .v`); if (v) { v.dataset.raw = d.val; v.dataset.num = Number.isFinite(d.num) ? String(d.num) : ""; if (d.count) v.dataset.cur = String(d.num); } });
@@ -1989,6 +2077,7 @@ INDEX_HTML = r"""
       });
     }
     function renderTicker() {
+      if (!$("tickerTrack")) return;   // ticker strip retired in Sprint 4 (declutter)
       const rows = state.ticker?.rows || [];
       if (!rows.length) { $("tickerTrack").innerHTML = `<div class="tick-item"><span class="muted">Ticker warming...</span></div>`; return; }
       $("tickerTrack").innerHTML = rows.map(r => {
@@ -2025,45 +2114,103 @@ INDEX_HTML = r"""
       for (let p = start; p <= end; p++) btns += `<button data-page="${p}" class="${p === page ? "active" : ""}">${p}</button>`;
       if (end < pages) btns += `${end < pages - 1 ? '<span class="pinfo">…</span>' : ""}<button data-page="${pages}">${pages}</button>`;
       btns += `<button data-page="${Math.min(pages, page + 1)}" ${page >= pages ? "disabled" : ""}>›</button>`;
-      el.innerHTML = `${btns}<span class="spacer"></span><span class="pinfo">${m.total} symbols · page ${page}/${pages} · ${m.page_size}/page</span>`;
-      el.querySelectorAll("button[data-page]").forEach(b => b.onclick = () => { state.page = Number(b.dataset.page); loadRadar(); });
+      const changed = setHTMLIfChanged(el, `${btns}<span class="spacer"></span><span class="pinfo">${m.total} symbols · page ${page}/${pages} · ${m.page_size}/page</span>`);
+      if (changed) el.querySelectorAll("button[data-page]").forEach(b => b.onclick = () => { state.page = Number(b.dataset.page); loadRadar(); });
+    }
+    // Column spec drives keyed, in-place cell updates — no per-poll innerHTML rebuild.
+    const RCOLS = [
+      {c:"spot_bid", f:price, flash:1}, {c:"spot_ask", f:price, flash:1}, {c:"spot_mid", f:price, flash:1},
+      {c:"fut_bid", f:price, flash:1}, {c:"fut_ask", f:price, flash:1}, {c:"futures_mid", f:price, flash:1},
+      {c:"spot_spread_bps", f:bps}, {c:"futures_spread_bps", f:bps},
+      {c:"spot_to_perp_bps", f:basisFmt, flash:1, cls:(v)=>basisClass(v)},
+      {c:"perp_to_spot_bps", f:basisFmt, flash:1, cls:(v)=>basisClass(v)},
+      {c:"abs_basis_bps", f:basisFmt, flash:1, cls:(v)=>basisClass(v)},
+      {c:"funding_rate", f:pct, flash:1, cls:(v)=>fundingClass(v)},
+      {c:"age_seconds", f:seconds, cls:(v,r)=>r.status==="LIVE"?"pos":"neg"},
+      {c:"opportunity_score", f:bps},
+    ];
+    const COPY_SVG = `<svg class="ic" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/></svg>`;
+    const OPEN_SVG = `<svg class="ic" viewBox="0 0 24 24"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg>`;
+    function buildRadarRow(r) {
+      const sym = r.symbol, tr = document.createElement("tr");
+      tr.dataset.symbol = sym;
+      tr.innerHTML = `<td class="fav-cell"><button class="star" data-pin title="Add favorite">☆</button></td>`
+        + `<td class="token-cell">${tokenIcon(sym)}</td>`
+        + `<td><div class="symbol-cell slim"><span class="sym">${esc(sym)}</span></div></td>`
+        + RCOLS.map(col => `<td data-c="${col.c}"></td>`).join("")
+        + `<td data-c="status"></td>`
+        + `<td class="action-cell"><span class="row-actions"><button class="icon-btn" data-copy title="Copy symbol">${COPY_SVG}</button><button class="icon-btn" data-open title="Open symbol detail">${OPEN_SVG}</button></span></td>`;
+      tr.addEventListener("click", (e) => { if (e.target.closest("[data-pin]") || e.target.closest("[data-copy]") || e.target.closest("[data-open]")) return; selectSymbol(sym); });
+      tr.querySelector("[data-pin]").addEventListener("click", (e) => { e.stopPropagation(); togglePin(sym); });
+      tr.querySelector("[data-copy]").addEventListener("click", (e) => { e.stopPropagation(); copySymbol(sym); });
+      tr.querySelector("[data-open]").addEventListener("click", (e) => { e.stopPropagation(); selectSymbol(sym); });
+      return tr;
+    }
+    function updateRadarRow(tr, r) {
+      const selected = r.symbol === state.selectedSymbol;
+      if (tr.classList.contains("selected") !== selected) tr.classList.toggle("selected", selected);
+      const star = tr.querySelector("[data-pin]"), pin = isPinned(r.symbol), ch = pin ? "★" : "☆";
+      if (star.textContent !== ch) { star.textContent = ch; star.classList.toggle("on", pin); star.title = pin ? "Remove favorite" : "Add favorite"; }
+      for (const col of RCOLS) {
+        const td = tr.querySelector(`[data-c="${col.c}"]`); if (!td) continue;
+        const raw = r[col.c], html = col.f(raw);
+        if (td._raw !== html) {
+          if (col.flash) { const dir = flashDir(td._n, raw); if (dir) { td.classList.remove("flash-up", "flash-down"); void td.offsetWidth; td.classList.add(dir); } }
+          td.innerHTML = html; td._raw = html;
+        }
+        td._n = Number(raw);
+        if (col.cls) { const cls = col.cls(raw, r) || "", up = td.classList.contains("flash-up"), down = td.classList.contains("flash-down"); td.className = cls + (up ? " flash-up" : "") + (down ? " flash-down" : ""); }
+      }
+      const stTd = tr.querySelector('[data-c="status"]'), b = badge(r);
+      if (stTd._raw !== b) { stTd.innerHTML = b; stTd._raw = b; }
+    }
+    function radarViewSig() {
+      return `${state.filter}|${state.page}|${state.pageSize}|${state.sortKey}|${state.sortDir}|${state.search}|${state.threshold}`;
     }
     function renderRadar() {
-      const wrap = $("radarScroll");
+      const wrap = $("radarScroll"); if (!wrap) return;
       const scrollTop = wrap.scrollTop;
       const rows = visibleRows();
       renderPager();
-      if (!rows.length) { $("liveRows").innerHTML = `<tr><td colspan="19" class="empty">No rows match current filters. Last-good data stays on screen during transient hiccups.</td></tr>`; return; }
-      $("liveRows").innerHTML = rows.map((r, i) => `<tr data-symbol="${esc(r.symbol)}" style="--i:${i}" class="${r.symbol === state.selectedSymbol ? "selected" : ""}">
-        <td class="fav-cell"><button class="star ${isPinned(r.symbol) ? "on" : ""}" data-pin="${esc(r.symbol)}" title="${isPinned(r.symbol) ? "Remove favorite" : "Add favorite"}">${isPinned(r.symbol) ? "★" : "☆"}</button></td>
-        <td class="token-cell">${tokenIcon(r.symbol)}</td>
-        <td><div class="symbol-cell slim"><span class="sym">${esc(r.symbol)}</span></div></td>
-        <td class="${flash(r.symbol, "spot_bid", r.spot_bid)}">${price(r.spot_bid)}</td>
-        <td class="${flash(r.symbol, "spot_ask", r.spot_ask)}">${price(r.spot_ask)}</td>
-        <td>${price(r.spot_mid)}</td>
-        <td class="${flash(r.symbol, "fut_bid", r.fut_bid)}">${price(r.fut_bid)}</td>
-        <td class="${flash(r.symbol, "fut_ask", r.fut_ask)}">${price(r.fut_ask)}</td>
-        <td>${price(r.futures_mid)}</td>
-        <td>${bps(r.spot_spread_bps)}</td>
-        <td>${bps(r.futures_spread_bps)}</td>
-        <td class="${basisClass(r.spot_to_perp_bps)}">${basisFmt(r.spot_to_perp_bps)}</td>
-        <td class="${basisClass(r.perp_to_spot_bps)}">${basisFmt(r.perp_to_spot_bps)}</td>
-        <td class="${basisClass(r.abs_basis_bps)}">${basisFmt(r.abs_basis_bps)}</td>
-        <td class="${fundingClass(r.funding_rate)}">${pct(r.funding_rate)}</td>
-        <td class="${r.status === "LIVE" ? "pos" : "neg"}">${seconds(r.age_seconds)}</td>
-        <td>${bps(r.opportunity_score)}</td>
-        <td>${badge(r)}</td>
-        <td class="action-cell"><span class="row-actions"><button class="icon-btn" data-copy="${esc(r.symbol)}" title="Copy symbol"><svg class="ic" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/></svg></button><button class="icon-btn" data-open="${esc(r.symbol)}" title="Open symbol detail"><svg class="ic" viewBox="0 0 24 24"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg></button></span></td>
-      </tr>`).join("");
-      // Stagger-reveal rows only when the set changes (sort/filter/page/search), not every poll.
-      const sig = `${state.filter}|${state.page}|${state.sortKey}|${state.sortDir}|${state.search}`;
       const tb = $("liveRows");
-      if (sig !== state._radarSig) { tb.classList.remove("reveal"); void tb.offsetWidth; tb.classList.add("reveal"); state._radarSig = sig; }
+      const sig = radarViewSig();
+      const setChanged = sig !== state._radarSig;
+      if (!rows.length) {
+        if (tb._mode !== "empty") { tb._nodes = new Map(); tb._mode = "empty"; }
+        setHTMLIfChanged(tb, `<tr><td colspan="19" class="empty">No rows match current filters. Last-good data stays on screen during transient hiccups.</td></tr>`);
+        state._radarSig = sig;
+        return;
+      }
+      if (tb._mode !== "rows") { tb.innerHTML = ""; tb._nodes = new Map(); tb._mode = "rows"; }
+      const nodes = tb._nodes;
+      // FLIP: capture row positions before any reorder (only when not doing a reveal).
+      const doFlip = !setChanged && !prefersReducedMotion();
+      const firstTop = doFlip ? new Map() : null;
+      if (doFlip) nodes.forEach((el, sym) => firstTop.set(sym, el.getBoundingClientRect().top));
+      const seen = new Set(), ordered = [];
+      for (const r of rows) {
+        let tr = nodes.get(r.symbol);
+        if (!tr) { tr = buildRadarRow(r); nodes.set(r.symbol, tr); }
+        updateRadarRow(tr, r);
+        ordered.push(tr); seen.add(r.symbol);
+      }
+      nodes.forEach((el, sym) => { if (!seen.has(sym)) { el.remove(); nodes.delete(sym); } });
+      let reordered = false;
+      for (let i = 0; i < ordered.length; i++) { if (tb.children[i] !== ordered[i]) { tb.insertBefore(ordered[i], tb.children[i] || null); reordered = true; } }
+      if (setChanged) {
+        ordered.forEach((tr, i) => tr.style.setProperty("--i", i));
+        tb.classList.remove("reveal"); void tb.offsetWidth; tb.classList.add("reveal"); state._radarSig = sig;
+        clearTimeout(state._revealTimer);
+        state._revealTimer = setTimeout(() => tb.classList.remove("reveal"), 750);   // let FLIP own movement afterward
+      } else if (doFlip && reordered) {
+        // FLIP: rows that changed rank glide to their new position instead of jumping.
+        for (const tr of ordered) {
+          const first = firstTop.get(tr.dataset.symbol); if (first == null) continue;
+          const dy = first - tr.getBoundingClientRect().top;
+          if (Math.abs(dy) > 0.5) { tr.style.transition = "none"; tr.style.transform = `translateY(${dy}px)`; requestAnimationFrame(() => { tr.style.transition = "transform .34s cubic-bezier(.4,0,.2,1)"; tr.style.transform = ""; }); }
+        }
+      }
       wrap.scrollTop = scrollTop;
-      document.querySelectorAll("#liveRows tr[data-symbol]").forEach(row => row.onclick = (e) => { if (e.target.closest("[data-pin]") || e.target.closest("[data-copy]") || e.target.closest("[data-open]")) return; selectSymbol(row.dataset.symbol); });
-      document.querySelectorAll("[data-pin]").forEach(btn => btn.onclick = (e) => { e.stopPropagation(); togglePin(btn.dataset.pin); });
-      document.querySelectorAll("[data-copy]").forEach(btn => btn.onclick = (e) => { e.stopPropagation(); copySymbol(btn.dataset.copy); });
-      document.querySelectorAll("[data-open]").forEach(btn => btn.onclick = (e) => { e.stopPropagation(); selectSymbol(btn.dataset.open); });
     }
     function miniRows(rows, mode="basis") {
       if (!rows || !rows.length) return `<div class="empty">Warming. Not enough rows yet.</div>`;
@@ -2089,21 +2236,21 @@ INDEX_HTML = r"""
       for (const r of rows) { if (out.length >= cap) break; if (!seen.has(r.symbol)) { out.push(r); seen.add(r.symbol); } }
       return out;
     }
-    function renderWatchlist() { $("watchlist").innerHTML = miniRows(watchlistRows(), "basis"); attachMiniClicks(); }
+    function renderWatchlist() { if (setHTMLIfChanged($("watchlist"), miniRows(watchlistRows(), "basis"))) attachMiniClicks(); }
     function renderOpps() {
       const o = state.opportunities || state.summary || {};
-      $("spotOpps").innerHTML = miniRows(o.top_spot_to_perp, "spot");
-      $("perpOpps").innerHTML = miniRows(o.top_perp_to_spot, "perp");
-      $("fundPos").innerHTML = miniRows(o.funding_shorts_paid, "fund");
-      $("fundNeg").innerHTML = miniRows(o.funding_longs_paid, "fund");
-      $("basisExpansion").innerHTML = miniRows(o.basis_expansion, "basis");
+      setHTMLIfChanged($("spotOpps"), miniRows(o.top_spot_to_perp, "spot"));
+      setHTMLIfChanged($("perpOpps"), miniRows(o.top_perp_to_spot, "perp"));
+      setHTMLIfChanged($("fundPos"), miniRows(o.funding_shorts_paid, "fund"));
+      setHTMLIfChanged($("fundNeg"), miniRows(o.funding_longs_paid, "fund"));
+      setHTMLIfChanged($("basisExpansion"), miniRows(o.basis_expansion, "basis"));
       attachMiniClicks();
     }
     function renderFunding() {
       const f = state.funding || {};
-      $("fundingPositive").innerHTML = miniRows(f.positive, "fund");
-      $("fundingNegative").innerHTML = miniRows(f.negative, "fund");
-      $("fundingChanges").innerHTML = miniRows(f.changes, "basis");
+      setHTMLIfChanged($("fundingPositive"), miniRows(f.positive, "fund"));
+      setHTMLIfChanged($("fundingNegative"), miniRows(f.negative, "fund"));
+      setHTMLIfChanged($("fundingChanges"), miniRows(f.changes, "basis"));
       attachMiniClicks();
       const el = $("fundingChart");
       if (state.tab !== "funding" || !el) return;
@@ -2118,10 +2265,10 @@ INDEX_HTML = r"""
     }
     function renderMovers() {
       const m = state.movers || {};
-      $("spotUp").innerHTML = miniRows(m.top_spot_up, "move");
-      $("spotDown").innerHTML = miniRows(m.top_spot_down, "move");
-      $("basisWide").innerHTML = miniRows(m.top_basis_widening, "basis");
-      $("basisCompress").innerHTML = miniRows(m.top_basis_compression, "basis");
+      setHTMLIfChanged($("spotUp"), miniRows(m.top_spot_up, "move"));
+      setHTMLIfChanged($("spotDown"), miniRows(m.top_spot_down, "move"));
+      setHTMLIfChanged($("basisWide"), miniRows(m.top_basis_widening, "basis"));
+      setHTMLIfChanged($("basisCompress"), miniRows(m.top_basis_compression, "basis"));
       attachMiniClicks();
     }
     function renderHeatmap() {
@@ -2165,7 +2312,7 @@ INDEX_HTML = r"""
       if (!row) {
         $("detailKvs").innerHTML = `<div class="empty">No current row for this symbol.</div>`;
         $("detailBook").innerHTML = "";
-        $("detailExtremes").innerHTML = `<div class="empty">Select a live symbol from search, radar, ticker, heatmap, or watchlist.</div>`;
+        $("detailExtremes").innerHTML = `<div class="empty">Select a live symbol from search, radar, heatmap, or watchlist.</div>`;
         $("detailTabContent").innerHTML = `<div class="detail-note">No current cache row is available for this symbol yet.</div>`;
         drawDetailChart();
         return;
@@ -2480,6 +2627,7 @@ INDEX_HTML = r"""
       attachMiniClicks();
     }
     function renderResearchSections() {
+      if (state.tab !== "quality") return;
       const rows = [...(state.bySymbol ? state.bySymbol.values() : state.rows || [])];
       const sortedBasis = rows.slice().sort((a, b) => (Number(b.abs_basis_bps) || 0) - (Number(a.abs_basis_bps) || 0));
       const fundingExtreme = rows.slice().sort((a, b) => Math.abs(Number(b.funding_rate) || 0) - Math.abs(Number(a.funding_rate) || 0));
@@ -2487,19 +2635,19 @@ INDEX_HTML = r"""
       const regime = state.regime || {};
       const h = state.health || {};
       const cm = state.cacheMetrics || {};
-      $("marketRegimeSummary").innerHTML = `<div class="kv" style="margin:8px"><span>Regime</span><strong>${esc(regime.regime || (h.status === "LIVE" ? "LIVE MARKET" : "SYNCING"))}</strong></div>` + (regime.signals || [
+      setHTMLIfChanged($("marketRegimeSummary"), `<div class="kv" style="margin:8px"><span>Regime</span><strong>${esc(regime.regime || (h.status === "LIVE" ? "LIVE MARKET" : "SYNCING"))}</strong></div>` + (regime.signals || [
         {label: "Live symbols", value: h.live_symbols ?? 0, text: "fresh"},
         {label: "Stale symbols", value: h.stale_symbol_count ?? 0, text: "aged"},
-      ]).slice(0, 5).map(s => `<div class="mini-row"><span class="sym">${esc(s.label)}</span><span>${fmt(s.value, 3)}</span><span class="muted">${esc(s.text || "")}</span><span></span>${badge({status:"LIVE", abs_basis_bps:0})}</div>`).join("");
-      $("wideBasisBoard").innerHTML = miniRows(sortedBasis.slice(0, 12), "basis");
-      $("fundingExtremesBoard").innerHTML = miniRows(fundingExtreme.slice(0, 12), "fund");
-      $("staleBoard").innerHTML = stale.length ? miniRows(stale.slice(0, 12), "basis") : `<div class="empty">No stale symbols in the current cache snapshot.</div>`;
-      $("qualityTimeline").innerHTML = [
-        `<div class="timeline-row ${h.status === "LIVE" ? "" : "warn"}"><span>${new Date().toLocaleTimeString()}</span><span>Collector status</span><strong>${esc(h.status || "SYNCING")}</strong></div>`,
+      ]).slice(0, 5).map(s => `<div class="mini-row"><span class="sym">${esc(s.label)}</span><span>${fmt(s.value, 3)}</span><span class="muted">${esc(s.text || "")}</span><span></span>${badge({status:"LIVE", abs_basis_bps:0})}</div>`).join(""));
+      setHTMLIfChanged($("wideBasisBoard"), miniRows(sortedBasis.slice(0, 12), "basis"));
+      setHTMLIfChanged($("fundingExtremesBoard"), miniRows(fundingExtreme.slice(0, 12), "fund"));
+      setHTMLIfChanged($("staleBoard"), stale.length ? miniRows(stale.slice(0, 12), "basis") : `<div class="empty">No stale symbols in the current cache snapshot.</div>`);
+      setHTMLIfChanged($("qualityTimeline"), [
+        `<div class="timeline-row ${h.status === "LIVE" ? "" : "warn"}"><span>${esc(state.lastPollTime || "--")}</span><span>Collector status</span><strong>${esc(h.status || "SYNCING")}</strong></div>`,
         `<div class="timeline-row ${Number(h.stale_symbol_count || 0) ? "warn" : ""}"><span>${seconds(liveAge(h))}</span><span>Latest DB snapshot age</span><strong>${esc(h.latest_update_utc || "--")}</strong></div>`,
         `<div class="timeline-row ${Number(cm.failed_refresh_count || 0) ? "bad" : ""}"><span>${seconds(cm.cache_age_seconds)}</span><span>Cache refresh loop</span><strong>${cm.last_refresh_ms != null ? `${cm.last_refresh_ms}ms` : "--"}</strong></div>`,
         `<div class="timeline-row ${state.consecutiveFailures ? "warn" : ""}"><span>${state.lastPollTime}</span><span>Browser state-lite poll</span><strong>${state.lastLatencyMs == null ? "--" : `${state.lastLatencyMs.toFixed(0)}ms`}</strong></div>`,
-      ].join("");
+      ].join(""));
       attachMiniClicks();
     }
     function renderRailContext() {
@@ -2512,7 +2660,7 @@ INDEX_HTML = r"""
         .slice(0, 8);
       const selectedHtml = selected
         ? `<div class="mini-row" data-symbol="${esc(selected.symbol)}"><span class="sym mini-sym">${tokenIcon(selected.symbol)}<span>${esc(selected.symbol)}</span></span><span class="${basisClass(selected.abs_basis_bps)}">${basisFmt(selected.abs_basis_bps)}</span><span class="${fundingClass(selected.funding_rate)}">${pct(selected.funding_rate)}</span>${sparkline(selected.symbol, 48, 16)}${badge(selected)}</div>`
-        : `<div class="empty">Select a row, ticker, heatmap tile, or search result to focus the symbol workspace.</div>`;
+        : `<div class="empty">Select a row, heatmap tile, watchlist item, or search result to focus the symbol workspace.</div>`;
       const feed = miniRows(leaders, "basis");
       const recentRows = state.recent
         .map(s => by.get(s) || (state.rows || []).find(r => r.symbol === s))
@@ -2521,8 +2669,7 @@ INDEX_HTML = r"""
       const recentHtml = recentRows.length
         ? `<div class="section-sub" style="padding:10px 2px 2px">Recently selected</div>${miniRows(recentRows, "basis")}`
         : "";
-      $("contextBox").innerHTML = selectedHtml + recentHtml + `<div class="section-sub" style="padding:10px 2px 2px">Strongest basis now</div>` + feed;
-      attachMiniClicks();
+      if (setHTMLIfChanged($("contextBox"), selectedHtml + recentHtml + `<div class="section-sub" style="padding:10px 2px 2px">Strongest basis now</div>` + feed)) attachMiniClicks();
     }
     function renderActiveTab() {
       switch (state.tab) {
@@ -2641,7 +2788,14 @@ INDEX_HTML = r"""
         const url = `/api/pages/markets?page=${state.page}&page_size=${state.pageSize}&sort=${encodeURIComponent(state.sortKey)}&direction=${dir}&filter=${encodeURIComponent(state.filter)}&q=${q}`;
         const d = await load("radar", url, FETCH_TIMEOUT_MS);
         if (d && Array.isArray(d.rows)) {
+          const sig = radarViewSig();
+          if (!d.rows.length && (state.rows || []).length && state._loadedRadarSig === sig) {
+            state.radarMeta = {page: d.page, pages: d.pages, total: d.total, page_size: d.page_size};
+            renderPager();
+            return;
+          }
           state.rows = d.rows; state.radarFull = true;
+          state._loadedRadarSig = sig;
           state.radarMeta = {page: d.page, pages: d.pages, total: d.total, page_size: d.page_size};
           indexRows(d.rows); pushSpark(d.rows); renderRadar(); renderWatchlist();
         }
@@ -2710,7 +2864,6 @@ INDEX_HTML = r"""
       {label:"Open Heatmap", hint:"Basis / funding mosaic", action:"heatmap", keys:"heatmap mosaic tiles"},
       {label:"Show Funding Extremes", hint:"Positive and negative funding", action:"funding", keys:"funding extremes rates"},
       {label:"Show Basis Radar", hint:"Main market table", action:"radar", keys:"radar markets basis table"},
-      {label:"Open Power Desk", hint:"Chart, book lens, prints", action:"desk", keys:"tradingview backpack desk chart book tape"},
       {label:"Data Quality", hint:"Freshness, cache, selftest", action:"quality", keys:"debug health cache api"},
       {label:"Expand Detail Chart", hint:"Fullscreen selected chart", action:"chartfs", keys:"fullscreen chart f"},
       {label:"Toggle Area Chart", hint:"Switch line / area", action:"area", keys:"chart area line"},
@@ -2791,7 +2944,7 @@ INDEX_HTML = r"""
       if (e.key === "?") { e.preventDefault(); setHelp(!$("helpMask").classList.contains("open")); return; }
       if (e.key === "/") { e.preventDefault(); cmdOpen(); return; }
       if (e.key.toLowerCase() === "d") { e.preventDefault(); $("themeToggle").click(); }
-      const tabs = {"1":"radar","2":"opps","3":"funding","4":"movers","5":"heatmap","6":"detail","7":"quality","8":"pulse","9":"desk"};
+      const tabs = {"1":"radar","2":"opps","3":"funding","4":"movers","5":"heatmap","6":"detail","7":"quality","8":"pulse"};
       if (tabs[e.key]) { e.preventDefault(); setTab(tabs[e.key]); }
     });
     $("themeToggle").onclick = () => { state.themeMode = resolvedTheme() === "dark" ? "light" : "dark"; localStorage.setItem("cg.themeMode", state.themeMode); applyTheme(); syncSettingsUI(); renderAll(); };
@@ -2800,6 +2953,7 @@ INDEX_HTML = r"""
     $("helpClose").onclick = () => setHelp(false);
     $("helpMask").onclick = (e) => { if (e.target === $("helpMask")) setHelp(false); };
     $("searchBtn").onclick = () => cmdOpen();
+    $("healthPill").onclick = () => setTab("quality");
     $("settingsBtn").onclick = () => settingsOpen();
     $("settingsClose").onclick = () => settingsClose();
     $("drawerMask").onclick = () => settingsClose();
@@ -2877,6 +3031,7 @@ INDEX_HTML = r"""
     if (urlParams.get("symbol")) state.selectedSymbol = urlParams.get("symbol").toUpperCase();
     const pathSymbol = location.pathname.match(/^\/symbol\/([A-Za-z0-9]+)/);
     if (pathSymbol) { state.selectedSymbol = cleanSymbol(pathSymbol[1]); state.tab = "detail"; }
+    if (state.tab === "desk") state.tab = "radar";
     // ================= MOTION LAYER (data-driven) =================
     // ---- shared Aave-style mega-menu ----
     let megaHideTimer = null;
@@ -3007,7 +3162,12 @@ INDEX_HTML = r"""
         track.querySelectorAll(".tape-item[data-symbol]").forEach(el => { el.onclick = () => { if (el.dataset.symbol) selectSymbol(el.dataset.symbol); }; });
       } else {
         const items = track.querySelectorAll(".tape-item"), all = ph.concat(ph);
-        items.forEach((el, i) => { const p = all[i]; if (!p) return; el.dataset.symbol = p.sym || ""; el.innerHTML = tapeItemHTML(p); el.onclick = () => { if (p.sym) selectSymbol(p.sym); }; });
+        items.forEach((el, i) => {
+          const p = all[i]; if (!p) return;
+          const sym = p.sym || "", html = tapeItemHTML(p);
+          if (el.dataset.symbol !== sym) el.dataset.symbol = sym;
+          setHTMLIfChanged(el, html);
+        });
       }
     }
 
@@ -3034,10 +3194,12 @@ INDEX_HTML = r"""
 
     // ---- live activity feed ----
     function pushActivity(kind, html, symbol) {
-      state.actId = (state.actId || 0) + 1;
       state.activity = state.activity || [];
+      const top = state.activity[0];
+      if (top && top.html === html) { top.t = Date.now(); return; }   // collapse consecutive repeats
+      state.actId = (state.actId || 0) + 1;
       state.activity.unshift({ id: state.actId, t: Date.now(), kind, html, symbol: symbol || null });
-      state.activity = state.activity.slice(0, 20);
+      state.activity = state.activity.slice(0, 18);
     }
     function detectActivity() {
       const rows = state.ticker?.rows || state.rows || []; if (!rows.length) return;
@@ -3047,15 +3209,16 @@ INDEX_HTML = r"""
       const fund = rows.slice().sort((a, b) => Math.abs(b.funding_rate || 0) - Math.abs(a.funding_rate || 0))[0];
       const staleNow = new Set(rows.filter(r => r.status !== "LIVE").map(r => r.symbol));
       const cm = state.cacheMetrics || {}, cacheSlow = cm.last_refresh_ms != null && cm.last_refresh_ms > 80;
+      const now = Date.now();
       if (ready) {
-        if (leader && p.leader && p.leader !== leader.symbol) pushActivity("up", `<b>${esc(leader.symbol)}</b> is the new basis leader · ${basisFmt(leader.abs_basis_bps)} bps`, leader.symbol);
-        if (leader) { const la = Math.abs(leader.abs_basis_bps) || 0; if (p.maxAbs != null && la > p.maxAbs + 4) { pushActivity("up", `New session basis high · <b>${esc(leader.symbol)}</b> ${basisFmt(leader.abs_basis_bps)} bps`, leader.symbol); const sp = $("spotlight"); if (sp && !prefersReducedMotion()) { sp.classList.remove("glow"); void sp.offsetWidth; sp.classList.add("glow"); } } }
-        if (fund && p.fundSym !== fund.symbol && Math.abs(fund.funding_rate || 0) > 0.0004) pushActivity("warn", `Funding extreme · <b>${esc(fund.symbol)}</b> ${pct(fund.funding_rate)}`, fund.symbol);
+        // Rate-limit leader/funding churn so an oscillating market can't spam the feed.
+        if (leader && p.leader && p.leader !== leader.symbol && now - (p.leaderAt || 0) > 9000) { pushActivity("up", `<b>${esc(leader.symbol)}</b> is the new basis leader · ${basisFmt(leader.abs_basis_bps)} bps`, leader.symbol); p.leaderAt = now; }
+        if (leader) { const la = Math.abs(leader.abs_basis_bps) || 0; if (p.maxAbs != null && la > p.maxAbs + 6 && now - (p.highAt || 0) > 12000) { pushActivity("up", `New session basis high · <b>${esc(leader.symbol)}</b> ${basisFmt(leader.abs_basis_bps)} bps`, leader.symbol); p.highAt = now; const sp = $("spotlight"); if (sp && !prefersReducedMotion()) { sp.classList.remove("glow"); void sp.offsetWidth; sp.classList.add("glow"); } } }
+        if (fund && p.fundSym !== fund.symbol && Math.abs(fund.funding_rate || 0) > 0.0004 && now - (p.fundAt || 0) > 12000) { pushActivity("warn", `Funding extreme · <b>${esc(fund.symbol)}</b> ${pct(fund.funding_rate)}`, fund.symbol); p.fundAt = now; }
         const prevStale = p.staleSet || new Set();
         staleNow.forEach(s => { if (!prevStale.has(s)) pushActivity("down", `<b>${esc(s)}</b> feed went stale`, s); });
         prevStale.forEach(s => { if (!staleNow.has(s)) pushActivity("up", `<b>${esc(s)}</b> feed is fresh again`, s); });
-        if (cacheSlow && !p.cacheSlow) pushActivity("warn", `Cache refresh slowed to ${Math.round(cm.last_refresh_ms)}ms`, null);
-        if (!cacheSlow && p.cacheSlow) pushActivity("info", `Cache refresh healthy · ${Math.round(cm.last_refresh_ms)}ms`, null);
+        // Cache-health noise stays OUT of the feed — it lives in the network badge popover.
       }
       if (leader) { p.leader = leader.symbol; p.maxAbs = Math.max(p.maxAbs || 0, Math.abs(leader.abs_basis_bps) || 0); }
       if (fund) p.fundSym = fund.symbol;
@@ -3065,11 +3228,15 @@ INDEX_HTML = r"""
     function renderActivity() {
       const el = $("activityFeed"); if (!el) return;
       const list = state.activity || [];
-      if (!list.length) { el.innerHTML = `<div class="empty" style="padding:10px 2px">Watching the stream for basis, funding, and freshness events…</div>`; return; }
+      if (!list.length) { setHTMLIfChanged(el, `<div class="empty" style="padding:10px 2px">Watching the stream for basis, funding, and freshness events…</div>`); return; }
+      // Only rebuild when the event set changes — never per-poll just to tick timestamps.
+      const sig = list.map(a => a.id).join(",");
+      if (sig === state._actSig) return;
+      const firstPaint = state._actSig === undefined;
       const topId = list[0].id;
-      el.innerHTML = list.map(a => `<div class="feed-row ${a.kind} ${a.id === topId && a.id !== state._lastFeedId ? "enter" : ""}"${a.symbol ? ` data-symbol="${esc(a.symbol)}"` : ""}><span class="fr-main">${a.html}</span><span class="fr-time">${timeAgo(a.t)}</span></div>`).join("");
+      el.innerHTML = list.map(a => `<div class="feed-row ${a.kind} ${a.id === topId && !firstPaint ? "enter" : ""}"${a.symbol ? ` data-symbol="${esc(a.symbol)}"` : ""}><span class="fr-main">${a.html}</span><span class="fr-time">${timeAgo(a.t)}</span></div>`).join("");
       el.querySelectorAll(".feed-row[data-symbol]").forEach(r => r.onclick = () => selectSymbol(r.dataset.symbol));
-      state._lastFeedId = topId;
+      state._actSig = sig;
     }
 
     // ---- Aave-style micro-visual widgets ----
@@ -3150,6 +3317,15 @@ INDEX_HTML = r"""
         pw.querySelector("[data-s]").textContent = `cache · api ${state.lastLatencyMs == null ? "--" : state.lastLatencyMs.toFixed(0) + "ms"}`;
       }
     }
+    function spotlightReason(r) {
+      const abs = Math.abs(Number(r.abs_basis_bps) || 0);
+      const fund = Math.abs(Number(r.funding_rate) || 0);
+      const spread = (Number(r.spot_spread_bps) || 0) + (Number(r.futures_spread_bps) || 0);
+      if (abs >= 100) return "basis extreme";
+      if (fund >= 0.0004) return "funding extreme";
+      if (r.status === "LIVE" && spread <= 8) return "fresh quote · clean spread";
+      return r.status === "LIVE" ? "fresh basis leader" : "leader needs freshness check";
+    }
     // ---- market spotlight hero (featured top dislocation) ----
     function renderSpotlight() {
       const host = $("spotlight"); if (!host) return;
@@ -3166,7 +3342,7 @@ INDEX_HTML = r"""
       if (host.dataset.sym !== sym) {
         host.dataset.sym = sym;
         host.innerHTML = `
-          <div class="spot-id">${tokenIcon(sym)}<div><div class="spot-eyebrow">Market spotlight</div><div class="spot-sym">${esc(sym)}</div><div class="spot-pair muted">spot · perp basis</div></div><span data-slot="badge"></span></div>
+          <div class="spot-id">${tokenIcon(sym)}<div><div class="spot-eyebrow">What matters now</div><div class="spot-sym">${esc(sym)}</div><div class="spot-pair muted" data-slot="reason">spot · perp basis</div></div><span data-slot="badge"></span></div>
           <div class="spot-px"><div class="spot-big" data-slot="px">--</div><div class="spot-chg" data-slot="basis">--</div></div>
           <div class="spot-stats" data-slot="stats"></div>
           <div class="spot-chart" data-slot="chart"></div>`;
@@ -3181,16 +3357,17 @@ INDEX_HTML = r"""
         if (dir) { pxEl.classList.remove("flash-up", "flash-down"); void pxEl.offsetWidth; pxEl.classList.add(dir); }
       }
       const basisEl = host.querySelector('[data-slot="basis"]');
-      basisEl.className = "spot-chg " + basisClass(r.abs_basis_bps);
-      basisEl.textContent = `${basisFmt(r.abs_basis_bps)} bps abs basis`;
-      host.querySelector('[data-slot="badge"]').innerHTML = badge(r);
-      host.querySelector('[data-slot="stats"]').innerHTML = [
+      setClassIfChanged(basisEl, "spot-chg " + basisClass(r.abs_basis_bps));
+      setTextIfChanged(basisEl, `${basisFmt(r.abs_basis_bps)} bps abs basis`);
+      setTextIfChanged(host.querySelector('[data-slot="reason"]'), spotlightReason(r));
+      setHTMLIfChanged(host.querySelector('[data-slot="badge"]'), badge(r));
+      setHTMLIfChanged(host.querySelector('[data-slot="stats"]'), [
         ["Spot→Perp", basisFmt(r.spot_to_perp_bps), basisClass(r.spot_to_perp_bps)],
         ["Funding", pct(r.funding_rate), fundingClass(r.funding_rate)],
         ["Spread", bps((Number(r.spot_spread_bps) || 0) + (Number(r.futures_spread_bps) || 0)), "muted"],
         ["Age", seconds(r.age_seconds), r.status === "LIVE" ? "pos" : "neg"],
-      ].map(([k, v, c]) => `<div class="ss"><span class="ss-k">${k}</span><span class="ss-v ${c}">${v}</span></div>`).join("");
-      host.querySelector('[data-slot="chart"]').innerHTML = sparkline(sym, 200, 56, true);
+      ].map(([k, v, c]) => `<div class="ss"><span class="ss-k">${k}</span><span class="ss-v ${c}">${v}</span></div>`).join(""));
+      setHTMLIfChanged(host.querySelector('[data-slot="chart"]'), sparkline(sym, 200, 56, true));
     }
     // ---- floating network-health wifi badge ----
     function renderNetBadge() {
@@ -3201,16 +3378,24 @@ INDEX_HTML = r"""
       if (live && lat != null && lat < 300 && (cache == null || cache < 80)) net = "good";
       else if (lat != null && lat < 800) net = "mid";
       b.dataset.net = net;
-      const ms = $("netMs"); if (ms) ms.innerHTML = lat == null ? "--" : `${Math.round(lat)}<span style="font-size:9px;font-weight:500;color:var(--muted)">ms</span>`;
-      const st = $("netState"); if (st) st.textContent = net === "good" ? "live" : net === "mid" ? "slow" : "weak";
-      const pop = $("netPop");
-      if (pop) pop.innerHTML = `<div class="np-title">Network health</div>` + [
+      const ms = $("netMs"); if (ms) setHTMLIfChanged(ms, lat == null ? "--" : `${Math.round(lat)}<span style="font-size:9px;font-weight:500;color:var(--muted)">ms</span>`);
+      const st = $("netState"); if (st) setTextIfChanged(st, net === "good" ? "live" : net === "mid" ? "slow" : "weak");
+      const popHtml = `<div class="np-title">Network health</div>` + [
         ["Browser latency", lat == null ? "--" : `${Math.round(lat)} ms`],
         ["Cache refresh", cache == null ? "--" : `${Math.round(cache)} ms`],
         ["Snapshot age", seconds(age)],
         ["Live symbols", `${state.health?.live_symbols ?? 0} / ${state.health?.tracked_symbols ?? 0}`],
         ["Refreshes", `${state.cacheMetrics?.refresh_count ?? 0} · ${state.cacheMetrics?.failed_refresh_count ?? 0} fail`],
       ].map(([k, v]) => `<div class="np-row"><span>${k}</span><strong>${v}</strong></div>`).join("") + `<div class="np-row"><span>Action</span><strong class="blue">Open Data Quality →</strong></div>`;
+      setHTMLIfChanged($("netPop"), popHtml);
+      const hpHtml = `<div class="hp-title">Data health</div>` + [
+        ["Source", "Binance public"],
+        ["Browser", lat == null ? "--" : `${Math.round(lat)} ms`],
+        ["Cache", cache == null ? "--" : `${Math.round(cache)} ms`],
+        ["Age", seconds(age)],
+        ["Live symbols", `${state.health?.live_symbols ?? 0} / ${state.health?.tracked_symbols ?? 0}`],
+      ].map(([k, v]) => `<div class="hp-row"><span>${k}</span><strong>${v}</strong></div>`).join("");
+      setHTMLIfChanged($("healthPop"), hpHtml);
     }
     // ---- live market-mood chip ----
     function renderMood() {
