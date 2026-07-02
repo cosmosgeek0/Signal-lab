@@ -134,6 +134,14 @@ All endpoints return JSON and are designed to stay safe if SQLite is missing, em
 
 - `/api/state-lite` — compact hot payload the dashboard polls (~10 KB gzipped): health + cache metrics + metric strip + ticker majors + top-50 radar preview
 - `/api/radar?limit=300&filter=all` — full radar rows (server-side filter), fetched when the Radar tab is active
+- `/api/sparks` — precomputed per-symbol mini price series (from the cache's existing bounded read; powers the table sparklines, ~23 KB gzipped)
+- `/api/overview` — Binance-universe overview: metrics, majors, top basis/score, funding extremes, movers (composed in memory, ~7 KB gzipped)
+- `/api/market-overview` — full Market-page payload: Binance universe **plus** cached external context (CoinGecko global + top-100 w/ 7d sparklines & images, CoinPaprika fallback, Alternative.me Fear & Greed, DefiLlama TVL + stablecoins, FX). Each block carries its own `status`; a failing source degrades to `unavailable`, never fake data
+- `/api/coin-profile/{symbol}` — rich symbol profile: external coin data (rank/mcap/volume/supply/ATH/performance) + the live Binance row, composed from caches only
+- `/api/news-context` — cached crypto headlines (GDELT, keyless); **non-blocking** — requests never wait on the news source
+- `/api/fx` — display-currency state and USD→INR/EUR/GBP/JPY rates (open.er-api.com, keyless, 6 h TTL)
+- `/api/icon-manifest` — local CC0 icon list for the token-icon resolver; missing icons fall back to deterministic monograms with no browser-side third-party image requests
+- `/api/sources` — health for every source: Binance WS, local cache, CoinGecko, CoinPaprika, Alternative.me, DefiLlama, GDELT, FX, and CoinMarketCap (`key_required`; no keys are ever hardcoded). External adapters live in `bslab/web_sources.py`: TTL-cached (180 s–6 h), timeout-bounded, stale-if-error, never on the hot path
 - `/api/pages/markets?page=1&page_size=50&sort=abs_basis&direction=desc&filter=all&q=` — paginated + sorted market rows (drives the radar table pagination)
 - `/api/search?q=btc` — fuzzy symbol search (drives the command palette)
 - `/api/symbol/{symbol}` — one symbol's latest row from cache
@@ -161,17 +169,31 @@ All endpoints return JSON and are designed to stay safe if SQLite is missing, em
 - `/api/enrichment`
 - `/api/market-regime`
 
-## Frontend libraries
+## Frontend
 
-The terminal is a single self-contained HTML/CSS/JS document served by Starlette (`bslab/web_static.py`) — no Node, npm, Vite, React build pipeline, TradingView Advanced/Charting Library, or proprietary UI assets. The visible surface uses planes, rails, rows, sheets, and overlays rather than repeated bordered cards; debug output is hidden behind Data Quality / the status drawer by default.
+The frontend is a **no-build ES-module application** served by Starlette — no
+Node, npm, Vite, React build pipeline, or CDN runtime dependency. `bslab/web_static.py`
+is a thin HTML shell that injects the bootstrap snapshot (`window.__CG_BOOT__`) and the
+bundled-icon list (`window.__CG_ICONS__`); the product itself lives in `bslab/static/app/`
+(`main.js` + `lib/` + `ui/` + `screens/`) and is served from `/static/app/`. See
+[DESIGN.md](DESIGN.md) for the architecture and design system.
 
-- **Apache ECharts** (Apache-2.0) is loaded from `cdn.jsdelivr.net` for the history, distribution, and detail charts. Every chart call is guarded by a `window.echarts` check, so if the CDN is blocked the tables, heatmap, sparklines, and metrics still work. If your deployment has a strict Content Security Policy, allow `https://cdn.jsdelivr.net` or vendor ECharts locally.
-- **Token icons** are real coin logos from [`spothq/cryptocurrency-icons`](https://github.com/spothq/cryptocurrency-icons) (CC0), a curated set bundled locally under `bslab/static/icons/` and served at `/static/icons/<base>.svg`. Symbols without a bundled icon fall back to a generated circular monogram. UI chrome icons are original inline Tabler-style SVG paths (no icon font, no CDN).
-- **Command palette** (`/` or the search icon) queries `/api/search` for fuzzy symbol lookup with keyboard navigation.
-- **Settings drawer** (gear icon) controls theme (system/light/dark), basis units (bps/%), density, refresh speed, page size, and default chart window — all persisted in `localStorage`.
-- See [DESIGN.md](DESIGN.md) for the full design system (light-first tokens, typography, unframed surfaces, tables, charts, motion).
-- **Sparklines** are inline SVG drawn client-side from a rolling per-symbol mid buffer (no library, no extra endpoint).
-- **Number formatting** uses adaptive decimal precision (BTC shows 2 decimals, micro-cap tokens up to 8) and tabular-figure fonts for clean column alignment.
+- **Three screens.** Radar (`/`, market table + signals), Symbol (`/symbol/{SYM}`,
+  full asset page with a large central chart), Heatmap (`/heatmap`, tile surface).
+  Everything else lives in overlays: the ⌘K/`/` command palette and the data & status
+  drawer. No permanent right rail, no methodology or disclaimers in the main viewport.
+- **Charts are hand-built inline SVG** (area/line with crosshair, tooltip and axes) plus
+  compact sparklines — no charting library, no CDN, fully offline.
+- **Token icons** are real coin logos from [`spothq/cryptocurrency-icons`](https://github.com/spothq/cryptocurrency-icons)
+  (CC0) under `bslab/static/icons/`, served at `/static/icons/<base>.svg`; symbols without a
+  bundled icon fall back to a generated gradient monogram (never a blank circle). UI icons are
+  inlined Lucide (ISC) paths — no icon font, no CDN.
+- **Command palette** (`/` or the search box) queries `/api/search` for fuzzy symbol lookup
+  with full keyboard navigation.
+- **Theme** (light default / dark) is toggled from the header or data drawer and persisted in
+  `localStorage`, along with the watchlist and advanced-column choices.
+- **Number formatting** uses adaptive decimal precision (BTC shows 2 decimals, micro-cap tokens
+  up to 8) and tabular figures for clean column alignment.
 
 ### Reliability / data layer
 

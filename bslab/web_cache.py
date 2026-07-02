@@ -83,6 +83,7 @@ class MarketCache:
         self._lite_json: str = ""
         self._sizes: dict[str, int] = {}
         self._movers: dict[int, JsonDict] = {}
+        self._sparks: dict[str, list] = {}
         self._db_path: Optional[str] = None
         self._task: Optional[asyncio.Task] = None
         # metrics
@@ -187,6 +188,9 @@ class MarketCache:
             latest = q.dedupe_latest(raw)
             live = [q.row_to_dict(row) for row in latest]
             live.sort(key=lambda row: row["abs_basis_bps"], reverse=True)
+            # Per-symbol mini price history for table sparklines. Derived from
+            # the SAME bounded read used for dedupe — zero extra DB work.
+            self._sparks = self._sparks_from_raw(raw)
             latest_ts_ms = raw[0]["ts_ms"] if raw else None
             cutoff = int((time.time() - q.DEFAULT_HISTORY_MINUTES * 60) * 1000)
             recent_count = sum(1 for row in raw if row["ts_ms"] >= cutoff)
@@ -222,6 +226,95 @@ class MarketCache:
         self.symbol_count = len(live)
         self.latest_ts_ms = latest_ts_ms
         return self._store(snapshot)
+
+    @staticmethod
+    def _sparks_from_raw(raw: list, max_points: int = 32) -> dict[str, list]:
+        """Compact [ts_ms, spot_mid] series per symbol from the rows already
+        loaded this refresh (ts-descending). Downsampled to <= max_points."""
+        series: dict[str, list] = {}
+        for row in raw:
+            try:
+                bid, ask = float(row["spot_bid"]), float(row["spot_ask"])
+            except (TypeError, ValueError):
+                continue
+            if bid > 0 and ask > 0:
+                series.setdefault(row["symbol"], []).append([row["ts_ms"], round((bid + ask) / 2, 8)])
+        out: dict[str, list] = {}
+        for sym, pts in series.items():
+            pts.reverse()  # ascending time
+            n = len(pts)
+            if n > max_points:
+                step = n / float(max_points)
+                pts = [pts[int(i * step)] for i in range(max_points - 1)] + [pts[-1]]
+            out[sym] = pts
+        return out
+
+    def sparks(self) -> JsonDict:
+        snap = self._ensure()
+        return {"ok": True, "sparks": self._sparks, "count": len(self._sparks),
+                "health": snap.get("health", {})}
+
+    def overview(self) -> JsonDict:
+        """Market-overview payload for the landing page. Composed purely from
+        the precomputed snapshot + movers already in memory — no DB work."""
+        snap = self._ensure()
+        live = snap.get("live", [])  # sorted by abs_basis desc
+        m5 = self._movers.get(5, {})
+        m15 = self._movers.get(15, {})
+        by_fund = sorted(live, key=lambda r: q.safe_float(r.get("funding_rate")), reverse=True)
+        by_score = sorted(live, key=lambda r: q.safe_float(r.get("opportunity_score")), reverse=True)
+        return {
+            "ok": True,
+            "generated_ms": snap.get("generated_ms"),
+            "metrics": snap.get("summary", {}).get("metrics", {}),
+            "regime": snap.get("regime", {}),
+            "majors": list(snap.get("ticker", [])),
+            "top_basis": live[:8],
+            "top_score": by_score[:8],
+            "funding_top": by_fund[:8],
+            "funding_bottom": by_fund[-8:][::-1] if by_fund else [],
+            "movers": {
+                "spot_up": (m5.get("top_spot_up") or [])[:8],
+                "spot_down": (m5.get("top_spot_down") or [])[:8],
+                "basis_widening": (m15.get("top_basis_widening") or [])[:8],
+                "basis_compression": (m15.get("top_basis_compression") or [])[:8],
+            },
+            "health": snap.get("health", {}),
+        }
+
+    def sources(self) -> JsonDict:
+        """Source-health payload. Honest states only: sources that are not
+        configured say so — the UI must never fake data for them."""
+        snap = self._ensure()
+        health = snap.get("health", {})
+        status = health.get("status")
+        age = (
+            round(time.monotonic() - self._last_refresh_monotonic, 3)
+            if self._last_refresh_monotonic else None
+        )
+        binance_status = "live" if status == "LIVE" else ("stale" if status == "STALE" else "down")
+        cache_status = "live" if (age is not None and age < 10) else ("stale" if age is not None else "down")
+        return {
+            "ok": True,
+            "sources": [
+                {"id": "binance", "label": "Binance public WS", "kind": "primary",
+                 "status": binance_status,
+                 "detail": "spot bookTicker · USD-M bookTicker · markPrice/funding",
+                 "age_seconds": health.get("freshness_age_seconds"),
+                 "symbols": health.get("tracked_symbols")},
+                {"id": "cache", "label": "Local snapshot cache", "kind": "cache",
+                 "status": cache_status,
+                 "detail": f"refresh {REFRESH_INTERVAL_SEC}s · last {self.last_refresh_ms} ms",
+                 "age_seconds": age},
+                {"id": "coingecko", "label": "CoinGecko global", "kind": "context",
+                 "status": "not_configured",
+                 "detail": "global market cap & volume — plug-in ready, no source configured"},
+                {"id": "fx", "label": "FX rates", "kind": "context",
+                 "status": "not_configured",
+                 "detail": "currency conversion not configured — USD/USDT only"},
+            ],
+            "health": health,
+        }
 
     def _store(self, snapshot: JsonDict) -> JsonDict:
         self._snapshot = snapshot

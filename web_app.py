@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import MutableHeaders
 from starlette.middleware import Middleware
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
@@ -15,6 +16,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from bslab import web_queries as queries
+from bslab import web_sources as sources
 from bslab.web_cache import CACHE as market_cache
 from bslab.web_static import INDEX_HTML
 
@@ -166,6 +168,32 @@ def build_detail(symbol: str, minutes: int) -> JsonDict:
 
 # ---- routes -----------------------------------------------------------------
 
+class NoHeuristicCache:
+    """Add ``Cache-Control: no-cache`` to every response of the wrapped ASGI
+    app. Without it, browsers heuristically cache the ES modules (StaticFiles
+    only sends ETag/Last-Modified) and can serve STALE module versions without
+    revalidating after a deploy — a mixed-version module graph fails to link
+    and the app boots to a blank page. ``no-cache`` still allows cheap 304
+    revalidation; it is not ``no-store``.
+    """
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_header(message) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers["Cache-Control"] = "no-cache"
+            await send(message)
+
+        await self.app(scope, receive, send_with_header)
+
+
 async def homepage(_: Request) -> HTMLResponse:
     # Embed the compact lite snapshot so the first paint shows data immediately
     # (no SYNCING screen when the cache already has rows), plus the available
@@ -174,7 +202,8 @@ async def homepage(_: Request) -> HTMLResponse:
     safe = lite_json.replace("</", "<\\/")
     html = INDEX_HTML.replace(BOOTSTRAP_TOKEN, safe)
     html = html.replace(ICONS_TOKEN, json.dumps(ICON_BASES))
-    return HTMLResponse(html)
+    # The shell must never be cached: it carries the asset version + snapshot.
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
 async def api_search(request: Request) -> JSONResponse:
@@ -224,6 +253,168 @@ async def api_radar(request: Request) -> JSONResponse:
     limit = int_param(request, "limit", 300, 1, 1500)
     symbol_filter = request.query_params.get("filter", "all").strip().lower()
     return JSONResponse(await run_in_threadpool(market_cache.radar, limit, symbol_filter))
+
+
+async def api_sparks(_: Request) -> JSONResponse:
+    # Precomputed per-symbol mini price series (from the cache's existing
+    # bounded read); powers the table sparklines. No extra DB work.
+    return JSONResponse(await run_in_threadpool(market_cache.sparks))
+
+
+async def api_overview(_: Request) -> JSONResponse:
+    # Market landing page payload; composed from the in-memory snapshot.
+    return JSONResponse(await run_in_threadpool(market_cache.overview))
+
+
+def build_market_overview() -> JsonDict:
+    """Full Market-page payload: Binance universe + every external context
+    source. Each block is independent and carries its own status — a failing
+    source degrades to 'unavailable', never breaks the page."""
+    base = market_cache.overview()
+
+    def block(fn: Callable[[], JsonDict]) -> JsonDict:
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 - blocks must never break the page
+            return {"status": "unavailable", "error": f"{type(exc).__name__}: {exc}"}
+
+    tc = block(sources.top_coins)
+    try:
+        rest = sources.SOURCES["binance_rest"].get_nowait() or {}
+    except Exception:  # noqa: BLE001
+        rest = {}
+    live_bases = {}
+    for row in market_cache.state().get("live", []):
+        sym = row.get("symbol", "")
+        for quote in ("USDT", "USDC", "FDUSD"):
+            if sym.endswith(quote):
+                live_bases.setdefault(sym[: -len(quote)], row)
+                break
+    for coin in tc.get("coins", []):
+        row = live_bases.get(coin["base"])
+        if row:
+            coin["binance"] = {
+                "symbol": row["symbol"],
+                "basis_bps": row.get("mid_spread_bps"),
+                "funding_rate": row.get("funding_rate"),
+                "score": row.get("opportunity_score"),
+            }
+            # real-time price from the local Binance stream, but ONLY when it
+            # agrees with the reference price (±3%) — never show wrong numbers
+            spot = row.get("spot_mid")
+            ref = coin.get("price")
+            if spot and ref and abs(spot - ref) / ref <= 0.03:
+                coin["price_live"] = spot
+    # Binance public REST: real-time ticks for every listed coin (keyless).
+    for coin in tc.get("coins", []):
+        t = rest.get(coin["base"] + "USDT")
+        if t:
+            coin["price_live"] = t["price"]
+            coin["chg24h"] = t["chg24h"]          # fresher than the 90s snapshot
+            coin["vol_live"] = t["qvol"]
+    return {
+        **base,
+        "global": block(sources.global_overview),
+        "fear_greed": block(sources.fear_greed),
+        "defi": block(sources.defi_overview),
+        "stablecoins": block(sources.stablecoin_overview),
+        "top_coins": tc,
+        "global_history": block(sources.global_history),
+        "trending": block(sources.trending),
+        "stocks": block(sources.stocks_overview),
+        "dex": block(sources.dex_overview),
+        "fx": block(sources.fx_state),
+        "source_status": sources.statuses(),
+    }
+
+
+async def api_market_overview(_: Request) -> JSONResponse:
+    return JSONResponse(await run_in_threadpool(build_market_overview))
+
+
+def build_coin_profile(symbol: str) -> JsonDict:
+    """Rich symbol profile: external coin data (CoinGecko/Paprika caches) +
+    the live Binance row. Composed from caches only — no per-request fetch."""
+    clean = "".join(ch for ch in symbol.upper() if ch.isalnum())
+    base = clean
+    for quote in ("USDT", "USDC", "FDUSD", "BUSD"):
+        if clean.endswith(quote) and len(clean) > len(quote):
+            base = clean[: -len(quote)]
+            break
+    row = next((r for r in market_cache.state().get("live", []) if r.get("symbol") == clean), None)
+    if row is None:  # maybe they passed a bare base
+        row = next((r for r in market_cache.state().get("live", [])
+                    if r.get("symbol") == base + "USDT"), None)
+    coin = None
+    try:
+        coin = sources.coin_by_base(base)
+    except Exception:  # noqa: BLE001
+        coin = None
+    return {
+        "ok": True,
+        "symbol": clean,
+        "base": base,
+        "coin": coin,                 # None when no external source has it
+        "row": row,                   # None when not a tracked Binance pair
+        "health": market_cache.health(),
+    }
+
+
+async def api_coin_profile(request: Request) -> JSONResponse:
+    symbol = request.path_params.get("symbol", "").strip()
+    return JSONResponse(await run_in_threadpool(build_coin_profile, symbol))
+
+
+async def api_news_context(_: Request) -> JSONResponse:
+    return JSONResponse(await run_in_threadpool(lambda: {"ok": True, **sources.news_context()}))
+
+
+async def api_coin_history(request: Request) -> JSONResponse:
+    """Real price/volume/mcap history for any coin (CoinGecko market_chart,
+    cached + bounded). Powers the asset-page Price/Volume/Market-cap charts."""
+    base = "".join(ch for ch in request.path_params.get("base", "").upper() if ch.isalnum())
+    days = request.query_params.get("days", "1")
+
+    def build() -> JsonDict:
+        clean = base
+        for quote in ("USDT", "USDC", "FDUSD", "BUSD"):
+            if clean.endswith(quote) and len(clean) > len(quote):
+                clean = clean[: -len(quote)]
+                break
+        coin = None
+        try:
+            coin = sources.coin_by_base(clean)
+        except Exception:  # noqa: BLE001
+            coin = None
+        if not coin or not coin.get("id"):
+            return {"ok": True, "status": "unavailable", "base": clean,
+                    "error": "no external profile for this asset", "prices": [], "volumes": [], "mcaps": []}
+        chart = sources.coin_chart(coin["id"], days)
+        if not chart:
+            return {"ok": True, "status": "unavailable", "base": clean,
+                    "error": "history source unreachable", "prices": [], "volumes": [], "mcaps": []}
+        return {"ok": True, "status": "live", "source": "coingecko", "base": clean,
+                "id": coin["id"], "days": days, **chart}
+    return JSONResponse(await run_in_threadpool(build))
+
+
+async def api_fx(_: Request) -> JSONResponse:
+    return JSONResponse(await run_in_threadpool(lambda: {"ok": True, **sources.fx_state()}))
+
+
+async def api_icon_manifest(_: Request) -> JSONResponse:
+    # Local-only: the browser resolves bundled CC0 SVGs or deterministic
+    # monograms and never loads third-party token images.
+    return JSONResponse({"ok": True, "local": ICON_BASES, "remote": {}})
+
+
+async def api_sources(_: Request) -> JSONResponse:
+    # Data-source health: Binance/local cache + every external adapter.
+    def build() -> JsonDict:
+        payload = market_cache.sources()
+        internal = [s for s in payload["sources"] if s["id"] in {"binance", "cache"}]
+        return {**payload, "sources": internal + sources.statuses()}
+    return JSONResponse(await run_in_threadpool(build))
 
 
 async def api_detail(request: Request) -> JSONResponse:
@@ -316,9 +507,22 @@ async def api_perf(_: Request) -> JSONResponse:
 routes = [
     Route("/", homepage),
     Route("/symbol/{symbol}", homepage),
+    Route("/radar", homepage),
+    Route("/heatmap", homepage),
+    Route("/funding", homepage),
+    Route("/movers", homepage),
     Route("/api/state", api_state),
     Route("/api/state-lite", api_state_lite),
     Route("/api/radar", api_radar),
+    Route("/api/sparks", api_sparks),
+    Route("/api/overview", api_overview),
+    Route("/api/market-overview", api_market_overview),
+    Route("/api/coin-profile/{symbol}", api_coin_profile),
+    Route("/api/news-context", api_news_context),
+    Route("/api/coin-history/{base}", api_coin_history),
+    Route("/api/fx", api_fx),
+    Route("/api/icon-manifest", api_icon_manifest),
+    Route("/api/sources", api_sources),
     Route("/api/detail", api_detail),
     Route("/api/health", api_health),
     Route("/api/selftest", api_selftest),
@@ -340,7 +544,7 @@ routes = [
     Route("/api/pages/markets", api_pages_markets),
     Route("/api/symbol/{symbol}", api_symbol),
     Route("/api/symbol/{symbol}/history", api_symbol_history),
-    Mount("/static", app=StaticFiles(directory=STATIC_DIR, check_dir=False), name="static"),
+    Mount("/static", app=NoHeuristicCache(StaticFiles(directory=STATIC_DIR, check_dir=False)), name="static"),
 ]
 
 
@@ -348,6 +552,7 @@ routes = [
 async def lifespan(_: Starlette):
     sync_config()
     await market_cache.start()
+    sources.warm_sources()  # background daemon; never blocks startup
     try:
         yield
     finally:

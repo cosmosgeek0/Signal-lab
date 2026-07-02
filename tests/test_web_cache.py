@@ -268,6 +268,64 @@ def test_pages_markets_empty_db_does_not_crash(tmp_path, monkeypatch):
         assert r.status_code == 200 and isinstance(r.json(), dict)
 
 
+def test_api_overview_and_sources(tmp_path, monkeypatch):
+    if importlib.util.find_spec("httpx") is None:
+        return
+    from starlette.testclient import TestClient
+
+    db = make_db(tmp_path / "sample.sqlite")
+    point(db, monkeypatch)
+    client = TestClient(web_app.app)
+
+    o = client.get("/api/overview").json()
+    assert o["ok"] is True
+    assert o["metrics"]["total_symbols"] == 3
+    assert len(o["majors"]) >= 1 and len(o["top_basis"]) == 3
+    assert "movers" in o and "funding_top" in o
+
+    s = client.get("/api/sources").json()
+    assert s["ok"] is True
+    ids = {src["id"] for src in s["sources"]}
+    # internal sources + every keyless external adapter must be listed;
+    # key-required providers are kept OUT of the product surface entirely
+    assert {"binance", "cache", "binance_rest", "coingecko", "paprika", "fng",
+            "llama_tvl", "llama_stables", "llama_dex", "cg_stocks",
+            "news", "rss", "trending", "fx"} <= ids
+    assert not any(src["status"] == "key_required" for src in s["sources"])
+
+
+def test_api_overview_empty_db_safe(tmp_path, monkeypatch):
+    if importlib.util.find_spec("httpx") is None:
+        return
+    from starlette.testclient import TestClient
+
+    db = tmp_path / "empty.sqlite"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(SCHEMA)
+    point(db, monkeypatch)
+    client = TestClient(web_app.app)
+    for path in ["/api/overview", "/api/sources"]:
+        r = client.get(path)
+        assert r.status_code == 200 and r.json().get("ok", True) is not False
+
+
+def test_api_sparks_returns_per_symbol_series(tmp_path, monkeypatch):
+    if importlib.util.find_spec("httpx") is None:
+        return
+    from starlette.testclient import TestClient
+
+    db = make_db(tmp_path / "sample.sqlite")
+    point(db, monkeypatch)
+    client = TestClient(web_app.app)
+
+    s = client.get("/api/sparks").json()
+    assert s["ok"] is True and s["count"] == 3
+    pts = s["sparks"]["BTCUSDT"]
+    assert len(pts) >= 2                      # two snapshots in make_db
+    assert pts[0][0] <= pts[-1][0]            # ascending time
+    assert all(p[1] > 0 for p in pts)         # positive mids
+
+
 def test_static_icons_served(tmp_path, monkeypatch):
     if importlib.util.find_spec("httpx") is None:
         return

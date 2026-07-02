@@ -1,11 +1,37 @@
 # CG Signal Lab — Design System
 
 Original design. Visual inspirations, borrowed as *qualities* not assets:
-**Coinbase** asset-detail pages and market tables, **Binance** exchange density and
-text tabs, **Aave** smooth motion / shared mega-menu / soft data widgets, and
-**TradingView** chart interaction. No proprietary assets, icons, or markup are
-copied. The whole UI is a single no-build document rendered by Starlette
-(`bslab/web_static.py`); charts use Apache ECharts, icons are CC0.
+**Coinbase** asset-detail pages and market tables, **Binance / Backpack** exchange
+density and text tabs, **TradingView** chart interaction and workspace, **Pyth /
+Uniswap** exploration surfaces, and **Ledger / MetaMask** calm asset pages. No
+proprietary assets, icons, or markup are copied.
+
+## Architecture (frontend rebuild)
+
+The frontend was rebuilt from scratch as a **no-build ES-module application**
+(there is no Node/npm on the target and the deploy is a pure Python venv +
+`uvicorn`). `bslab/web_static.py` is now a thin HTML shell; the product lives in
+`bslab/static/app/` and is served straight from `/static/app/`:
+
+```
+bslab/static/app/
+  main.js            entry: shell, router, live poll
+  lib/  dom, format, api, icons, chart, store
+  ui/   header, command (Cmd-K palette), drawer (data sheet)
+  screens/  radar, symbol, heatmap
+```
+
+Three screens, everything else behind overlays:
+- **Radar** (`/`) — calm tape, "what matters now", the market table.
+- **Symbol** (`/symbol/{SYM}`) — full asset page, large central chart.
+- **Heatmap** (`/heatmap`) — its own tile surface.
+- Command palette (Cmd-K / `/`), the data & status **drawer**, and popovers carry
+  everything that used to clutter the main viewport.
+
+Charts are **hand-built SVG** (area/line + crosshair + axes) — no charting
+library, no CDN, fully offline. Token icons are CC0 (`spothq`) with a generated
+monogram fallback; UI icons are inlined Lucide (ISC). The backend API contract is
+unchanged; the client only reads the existing JSON endpoints.
 
 ## Principles
 - **Light-first.** The default theme is clean near-white (Binance/Figma), dark is the alternate. `:root` **is** the light theme; `[data-theme="dark"]` overrides.
