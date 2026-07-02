@@ -225,9 +225,11 @@ export function renderChart(host, series, opts = {}) {
   svg.addEventListener("pointerleave", leave);
 }
 
-// Mini area chart with gradient fill (market cards). Fills its container.
+// Mini area chart (market cards). Fills its container. `opts.dots` swaps the
+// gradient for a Coinbase-style dotted texture under the line; `opts.endDot`
+// caps the series with a marker on the last point.
 let miniSeq = 0;
-export function sparkArea(values, w = 150, h = 48, color) {
+export function sparkArea(values, w = 150, h = 48, color, opts = {}) {
   const vals = (values || []).map(Number).filter(isFinite);
   const open = `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="width:100%;height:100%;display:block">`;
   if (vals.length < 2) return open + "</svg>";
@@ -239,12 +241,20 @@ export function sparkArea(values, w = 150, h = 48, color) {
   const line = vals.map((v, i) => (i ? "L" : "M") + (i * stepX).toFixed(1) + " " + y(v).toFixed(1)).join(" ");
   const stroke = color || (vals[vals.length - 1] >= vals[0] ? "var(--up)" : "var(--down)");
   const gid = "ma" + miniSeq++;
-  return `${open}<defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
+  const defs = opts.dots
+    ? `<defs><pattern id="${gid}" width="5.5" height="5.5" patternUnits="userSpaceOnUse">
+        <circle cx="1.4" cy="1.4" r="1" fill="${stroke}" opacity=".30"/>
+      </pattern></defs>`
+    : `<defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="${stroke}" stop-opacity="0.20"/>
       <stop offset="1" stop-color="${stroke}" stop-opacity="0"/>
-    </linearGradient></defs>
+    </linearGradient></defs>`;
+  const endDot = opts.endDot
+    ? `<circle cx="${((vals.length - 1) * stepX).toFixed(1)}" cy="${y(vals[vals.length - 1]).toFixed(1)}" r="2.4" fill="${stroke}"/>`
+    : "";
+  return `${open}${defs}
     <path d="${line} L${w} ${h} L0 ${h} Z" fill="url(#${gid})"/>
-    <path d="${line}" fill="none" stroke="${stroke}" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>`;
+    <path d="${line}" fill="none" stroke="${stroke}" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>${endDot}</svg>`;
 }
 
 // Compact sparkline. Fills its container (wrap in a sized element).

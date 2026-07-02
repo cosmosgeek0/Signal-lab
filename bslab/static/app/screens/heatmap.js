@@ -140,10 +140,15 @@ export function renderHeatmap(root) {
       mount(surface, h("div", { class: "treemap-wrap" }, top.map((r, i) => {
         const v = M.val(r);
         const rc = rects[i];
-        const big = rc.w * rc.h > 40;      // enough area for value label
-        const mid = rc.w * rc.h > 12;
+        const area = rc.w * rc.h;          // % units of a 100×62 canvas
+        const big = area > 40;
+        const mid = area > 12;
+        // TradingView-style: centered content whose type scales with tile
+        // area, so a trillion-dollar tile reads from across the room.
+        const symFs = Math.min(52, Math.max(11.5, Math.sqrt(area) * 1.35));
+        const chg = M.external ? r._chg24h : null;
         return h("div", {
-          class: "tm-cell", title: `${r.symbol} · ${M.fmt(v)}`,
+          class: "tm-cell", title: `${r.symbol} · ${M.fmt(v)}` + (chg != null ? ` · ${fmtPct(chg)} 24h` : ""),
           style: {
             left: rc.x + "%", top: (rc.y / 62 * 100) + "%",
             width: rc.w + "%", height: (rc.h / 62 * 100) + "%",
@@ -151,8 +156,10 @@ export function renderHeatmap(root) {
           },
           onClick: () => navigate("/symbol/" + r.symbol),
         },
-          mid ? h("span", { class: "tm-sym" }, baseOf(r.symbol)) : null,
-          big ? h("span", { class: "tm-val num" }, M.fmt(v)) : null);
+          mid ? h("span", { class: "tm-sym", style: { fontSize: symFs.toFixed(1) + "px" } }, baseOf(r.symbol)) : null,
+          big && chg != null ? h("span", { class: "tm-chg num", style: { fontSize: Math.max(10.5, symFs * 0.42).toFixed(1) + "px" } },
+            (chg >= 0 ? "▲ " : "▼ ") + Math.abs(chg).toFixed(2) + "%") : null,
+          big ? h("span", { class: "tm-val num", style: { fontSize: Math.max(10, symFs * 0.34).toFixed(1) + "px" } }, M.fmt(v)) : null);
       })));
     } else if (mode === "Mosaic") {
       const top = sorted.slice(0, 96);

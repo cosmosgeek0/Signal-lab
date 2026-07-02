@@ -6,7 +6,7 @@
 import { h, mount } from "../lib/dom.js";
 import { icon, tokenIcon, starIcon } from "../lib/icons.js";
 import { api } from "../lib/api.js";
-import { linkTo, isStarred, toggleStar } from "../lib/store.js";
+import { linkTo, isStarred, toggleStar, getTheme } from "../lib/store.js";
 import {
   baseOf, quoteOf, fmtPrice, fmtMoney, fmtBps, fmtBasisVal, basisUnit, fmtFunding,
   fmtScore, fmtAge, fmtPct, signClass, fmtTimeShort, fmtDateTime, fmtCompact,
@@ -28,12 +28,16 @@ const LOCAL_WINDOWS = ["5m", "15m", "1h", "4h", "24h", "7d", "all"];
 const EXT_WINDOWS = [["24h", "1"], ["7d", "7"], ["30d", "30"], ["90d", "90"], ["1y", "365"], ["all", "max"]];
 const PRICE_SERIES = [["price", "Price"], ["volume", "Volume"], ["mcap", "Mkt cap"]];
 
+const chartSrcPref = () => { try { return localStorage.getItem("cg-chartsrc") || "native"; } catch (e) { return "native"; } };
+const setChartSrcPref = (v) => { try { localStorage.setItem("cg-chartsrc", v); } catch (e) {} };
+
 export function renderSymbol(root, symbol) {
   const params = new URLSearchParams(location.search);
   let tab = TABS.some((t) => t.id === params.get("tab")) ? params.get("tab") : "overview";
   let win = "1h";              // local windows (basis/funding/spread + fallback)
   let extWin = "24h";          // external windows (real price history)
   let priceSeries = "price";   // price | volume | mcap
+  let chartSrc = chartSrcPref(); // native | tv (TradingView widget)
   let history = [];            // local Binance rows
   let extCache = {};           // days -> {prices, volumes, mcaps}
   let latest = null;
@@ -119,13 +123,21 @@ export function renderSymbol(root, symbol) {
       } }, w)));
     }
     // price series picker (only with real external data)
-    if (isPriceTab() && extAvailable()) {
+    if (isPriceTab() && extAvailable() && chartSrc === "native") {
       seriesSeg.style.display = "";
       mount(seriesSeg, PRICE_SERIES.map(([id, label]) => h("button", { class: id === priceSeries ? "on" : "", onClick: () => {
         priceSeries = id; buildChartControls(); drawChart(true);
       } }, label)));
     } else seriesSeg.style.display = "none";
-    srcSeg.style.display = "none";
+    // chart source toggle (native SVG vs TradingView widget). Tokenized stocks
+    // stay native: their real history lives here; TV has no BINANCE pair.
+    if (isStock() && chartSrc === "tv") chartSrc = "native";
+    if (isPriceTab() && !isStock()) {
+      srcSeg.style.display = "";
+      mount(srcSeg,
+        h("button", { class: chartSrc === "native" ? "on" : "", onClick: () => { chartSrc = "native"; setChartSrcPref("native"); buildChartControls(); drawChart(true); } }, "Chart"),
+        h("button", { class: chartSrc === "tv" ? "on" : "", onClick: () => { chartSrc = "tv"; setChartSrcPref("tv"); buildChartControls(); drawChart(false); } }, "TradingView"));
+    } else srcSeg.style.display = "none";
   }
 
   // ---- series ----
@@ -164,6 +176,19 @@ export function renderSymbol(root, symbol) {
 
   function drawChart(animate = false) {
     if (!chartModeOf()) return;
+    // TradingView widget mode (crypto pairs only — stocks stay native)
+    if (isPriceTab() && chartSrc === "tv" && !isStock()) {
+      const tvSymbol = latest ? "BINANCE%3A" + symbol : encodeURIComponent(base + "USD");
+      const theme = getTheme() === "dark" ? "dark" : "light";
+      mount(chartBody, h("iframe", {
+        src: `https://s.tradingview.com/widgetembed/?symbol=${tvSymbol}&interval=60&theme=${theme}&style=1&locale=en&hidesidetoolbar=1&symboledit=0&saveimage=0&withdateranges=1`,
+        style: { width: "100%", height: "460px", border: "0", display: "block" },
+        loading: "lazy", allow: "fullscreen",
+        title: "TradingView chart",
+      }));
+      mount(chartMeta, "TradingView widget · live · binance feed");
+      return;
+    }
     let useExt = isPriceTab() && extAvailable();
     let series = useExt ? (extSeries() || []) : localSeries();
     let extFellBack = false;
@@ -429,7 +454,7 @@ export function renderSymbol(root, symbol) {
     try {
       const res = await api.history(symbol, win);
       history = res.rows || [];
-      if (chartModeOf() && !(isPriceTab() && extAvailable())) {
+      if (chartModeOf() && !(isPriceTab() && (extAvailable() || chartSrc === "tv"))) {
         drawChart(animate);
       }
       if (!hadHistory && history.length && chartModeOf()) { hadHistory = true; paintBody(false); }
@@ -453,7 +478,7 @@ export function renderSymbol(root, symbol) {
       }
     } catch (e) {}
     drawChart(animate);
-    if (!extCache[days] && isPriceTab()) {
+    if (!extCache[days] && isPriceTab() && chartSrc !== "tv") {
       extRetryTimer = setTimeout(() => loadExt(false), 12000);  // self-heal
     }
     if (tab === "price") paintBody(false); // price-history panel uses ext data
@@ -478,7 +503,7 @@ export function renderSymbol(root, symbol) {
   const t2 = setInterval(() => { if (chartModeOf()) loadHistory(false); }, 30000);
   const t3 = setInterval(loadProfile, 120000);
   let rz;
-  const onResize = () => { clearTimeout(rz); rz = setTimeout(() => { if (chartModeOf()) drawChart(false); }, 120); };
+  const onResize = () => { clearTimeout(rz); rz = setTimeout(() => { if (chartModeOf() && chartSrc !== "tv") drawChart(false); }, 120); };
   window.addEventListener("resize", onResize);
   cleanups.push(() => { clearInterval(t1); clearInterval(t2); clearInterval(t3); clearTimeout(extRetryTimer); window.removeEventListener("resize", onResize); });
 

@@ -15,16 +15,22 @@ Rules enforced here:
 """
 from __future__ import annotations
 
+import html
 import json
+import re
 import threading
 import time
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 JsonDict = dict[str, Any]
 
 USER_AGENT = "CGSignalLab/1.0 (public research dashboard)"
+# Yahoo Finance rejects non-browser agents outright; it gets a browser UA.
+BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 MAX_BYTES = 3_500_000          # response size cap
 ERROR_RETRY_SEC = 60.0         # back off after a failure instead of hammering
 
@@ -38,14 +44,38 @@ class _Redirect308(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_Redirect308())
 
 
-def fetch_bytes(url: str, timeout: float = 6.0, accept: str = "application/json") -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": accept})
+def fetch_bytes(url: str, timeout: float = 6.0, accept: str = "application/json",
+                ua: str = USER_AGENT) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": ua, "Accept": accept})
     with _OPENER.open(req, timeout=timeout) as resp:
         return resp.read(MAX_BYTES)
 
 
-def fetch_json(url: str, timeout: float = 6.0) -> Any:
-    return json.loads(fetch_bytes(url, timeout).decode("utf-8", "replace"))
+def fetch_json(url: str, timeout: float = 6.0, ua: str = USER_AGENT) -> Any:
+    return json.loads(fetch_bytes(url, timeout, ua=ua).decode("utf-8", "replace"))
+
+
+def post_json(url: str, form: dict[str, Any], timeout: float = 6.0) -> Any:
+    body = urllib.parse.urlencode(form).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json,text/plain,*/*",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        },
+        method="POST",
+    )
+    with _OPENER.open(req, timeout=timeout) as resp:
+        text = resp.read(MAX_BYTES).decode("utf-8", "replace")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # Lookonchain occasionally emits JavaScript-style \' inside JSON
+        # strings. That is not valid JSON, but the rest of the payload is
+        # well-formed; normalize this one escape instead of dropping the feed.
+        return json.loads(text.replace("\\'", "'"))
 
 
 class TTLSource:
@@ -53,7 +83,7 @@ class TTLSource:
 
     def __init__(self, sid: str, label: str, kind: str, ttl: float,
                  fetcher: Optional[Callable[[], Any]], detail: str = "",
-                 status_override: str = "") -> None:
+                 status_override: str = "", retry_sec: float = ERROR_RETRY_SEC) -> None:
         self.id = sid
         self.label = label
         self.kind = kind
@@ -61,6 +91,7 @@ class TTLSource:
         self.fetcher = fetcher
         self.detail = detail
         self.status_override = status_override
+        self.retry_sec = retry_sec
         self.data: Any = None
         self.fetched_mono = 0.0
         self.last_ok_ts: Optional[float] = None
@@ -114,7 +145,7 @@ class TTLSource:
                 self._next_try = 0.0
             except Exception as exc:  # noqa: BLE001 - a source must never raise out
                 self.last_error = f"{type(exc).__name__}: {exc}"
-                self._next_try = time.monotonic() + ERROR_RETRY_SEC
+                self._next_try = time.monotonic() + self.retry_sec
             return self.data
 
     def age_seconds(self) -> Optional[float]:
@@ -187,6 +218,171 @@ def _gdelt_news() -> JsonDict:
     return fetch_json(url, timeout=8.0)
 
 
+def _lookonchain_news() -> list:
+    """Lookonchain public feed endpoint used by its /feeds page.
+
+    The site renders the feed through a bounded form POST. We store only the
+    headline, source link and creation time, never article bodies/images.
+    """
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    data = post_json(
+        "https://www.lookonchain.com/ashx/index.ashx",
+        {"max_time": now, "protype": "", "page": "1", "count": "20"},
+        timeout=8.0,
+    )
+    rows = data.get("content") or []
+    out = []
+    for row in rows[:20]:
+        title = html.unescape(str(row.get("stitle") or "").strip())
+        link = str(row.get("surl") or "").strip() or (
+            "https://www.lookonchain.com/feeds/" + str(row.get("nnewflash_id") or "").strip()
+        )
+        raw_ts = str(row.get("dcreate_time") or "").strip()
+        iso = None
+        if raw_ts:
+            try:
+                iso = datetime.strptime(raw_ts, "%Y-%m-%d %H:%M:%S").replace(
+                    tzinfo=timezone.utc
+                ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            except ValueError:
+                iso = None
+        if title and link:
+            out.append({
+                "title": title[:220],
+                "url": link,
+                "domain": "lookonchain.com",
+                "time": iso,
+                "origin": urllib.parse.urlparse(link).netloc.replace("www.", ""),
+            })
+    if not out:
+        raise OSError("Lookonchain returned no feed rows")
+    return out
+
+
+def _tree_news() -> list:
+    """Tree of Alpha public news API — the real-time market squawk wire. It
+    aggregates the fast X/Twitter accounts (Walter Bloomberg, Tree News,
+    Watcher Guru, Lookonchain…) plus exchange listing headlines, keyless.
+    We keep headline/link/time/coin-tags only, never bodies or media."""
+    rows = fetch_json("https://news.treeofalpha.com/api/news?limit=60", timeout=9.0)
+    out = []
+    for row in rows:
+        title = str(row.get("title") or "").strip()
+        if not title:
+            continue
+        src = str(row.get("source") or "").strip()
+        handle = ""
+        if src.lower() == "twitter":
+            m = re.match(r"^(.{2,80}?)\s*\(@([A-Za-z0-9_]{2,20})\):\s*(.+)$", title, re.S)
+            if m:
+                handle = m.group(2)
+                title = m.group(3)
+        title = title.split("\n", 1)[0].strip()           # drop translations
+        title = re.sub(r"https?://\S+", "", title).strip(" -–—:·")
+        if len(title) < 8:
+            continue
+        ts = row.get("time")
+        iso = None
+        if isinstance(ts, (int, float)) and ts > 0:
+            iso = datetime.fromtimestamp(ts / 1000.0, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        syms: list = []
+        for s in (row.get("suggestions") or []):
+            coin = str((s or {}).get("coin") or "").upper()
+            if coin and coin not in syms:
+                syms.append(coin)
+        out.append({
+            "title": html.unescape(title)[:220],
+            "url": str(row.get("url") or "").strip() or "https://news.treeofalpha.com",
+            "domain": ("@" + handle) if handle else (src.lower() or "treeofalpha"),
+            "time": iso,
+            "lane": "squawk",
+            "symbols_hint": syms[:4],
+        })
+    if not out:
+        raise OSError("Tree of Alpha returned no rows")
+    return out[:60]
+
+
+# World markets: (yahoo symbol, display name, group). One spark call covers all.
+WORLD_SYMBOLS = [
+    ("^GSPC", "S&P 500", "us"), ("^IXIC", "Nasdaq", "us"), ("^DJI", "Dow Jones", "us"),
+    ("^RUT", "Russell 2000", "us"), ("^VIX", "VIX", "us"),
+    ("^FTSE", "FTSE 100", "europe"), ("^GDAXI", "DAX", "europe"),
+    ("^FCHI", "CAC 40", "europe"), ("^STOXX50E", "Euro Stoxx 50", "europe"),
+    ("^N225", "Nikkei 225", "asia"), ("^HSI", "Hang Seng", "asia"),
+    ("000001.SS", "SSE Composite", "asia"), ("^KS11", "KOSPI", "asia"),
+    ("^NSEI", "Nifty 50", "india"), ("^BSESN", "Sensex", "india"),
+    ("^NSEBANK", "Nifty Bank", "india"),
+    ("AAPL", "Apple", "stocks"), ("MSFT", "Microsoft", "stocks"),
+    ("NVDA", "NVIDIA", "stocks"), ("GOOGL", "Alphabet", "stocks"),
+    ("AMZN", "Amazon", "stocks"), ("META", "Meta", "stocks"),
+    ("TSLA", "Tesla", "stocks"), ("AVGO", "Broadcom", "stocks"),
+    ("JPM", "JPMorgan", "stocks"), ("LLY", "Eli Lilly", "stocks"),
+    ("GC=F", "Gold", "commodities"), ("SI=F", "Silver", "commodities"),
+    ("CL=F", "WTI Crude", "commodities"), ("NG=F", "Natural gas", "commodities"),
+    ("HG=F", "Copper", "commodities"),
+    ("DX-Y.NYB", "Dollar index", "fx"), ("EURUSD=X", "EUR/USD", "fx"),
+    ("USDJPY=X", "USD/JPY", "fx"), ("USDINR=X", "USD/INR", "fx"),
+    ("^TNX", "US 10Y yield", "rates"), ("^TYX", "US 30Y yield", "rates"),
+]
+
+
+_YAHOO_HOSTS = ("query1.finance.yahoo.com", "query2.finance.yahoo.com")
+
+
+def _yahoo_world() -> list:
+    """Yahoo Finance spark API: ONE bounded request for every world symbol —
+    US/EU/Asia/India indices, commodities, FX, Treasury yields — with real
+    intraday closes. Keyless but aggressively per-IP rate limited, so this
+    lives behind a long TTL and stale-if-error; never called per-request."""
+    syms = ",".join(s for s, _, _ in WORLD_SYMBOLS)
+    host = _YAHOO_HOSTS[int(time.time() / 60) % len(_YAHOO_HOSTS)]
+    url = (f"https://{host}/v7/finance/spark?symbols="
+           + urllib.parse.quote(syms) + "&range=1d&interval=15m")
+    data = fetch_json(url, timeout=12.0, ua=BROWSER_UA)
+    blocks: dict = {}
+    if isinstance(data, dict):
+        for r in ((data.get("spark") or {}).get("result")) or []:
+            resp = (r.get("response") or [None])[0]
+            if r.get("symbol") and isinstance(resp, dict):
+                blocks[r["symbol"]] = resp
+        if not blocks:  # older flat shape: {"^GSPC": {timestamp, close, ...}}
+            for k, v in data.items():
+                if isinstance(v, dict) and ("close" in v or "meta" in v or "timestamp" in v):
+                    blocks[k] = v
+    out = []
+    for sym, name, group in WORLD_SYMBOLS:
+        b = blocks.get(sym)
+        if not b:
+            continue
+        meta = b.get("meta") or {}
+        quote = ((b.get("indicators") or {}).get("quote") or [{}])[0]
+        closes = [c for c in (quote.get("close") or b.get("close") or [])
+                  if isinstance(c, (int, float))]
+        last = meta.get("regularMarketPrice")
+        if last is None and closes:
+            last = closes[-1]
+        prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+        if not isinstance(last, (int, float)):
+            continue
+        scale = 0.1 if group == "rates" else 1.0   # ^TNX quotes yield ×10
+        chg = None
+        if isinstance(prev, (int, float)) and prev:
+            chg = (last - prev) / prev * 100.0
+        out.append({
+            "symbol": sym, "name": name, "group": group,
+            "last": round(last * scale, 4),
+            "prev_close": round(prev * scale, 4) if isinstance(prev, (int, float)) else None,
+            "chg_pct": round(chg, 3) if chg is not None else None,
+            "spark": [round(c * scale, 4) for c in _downsample(closes, 42)],
+            "currency": meta.get("currency"),
+            "asof": meta.get("regularMarketTime"),
+        })
+    if len(out) < 5:
+        raise OSError(f"yahoo spark returned {len(out)} symbols")
+    return out
+
+
 def _fx_rates() -> JsonDict:
     data = fetch_json("https://open.er-api.com/v6/latest/USD", timeout=8.0)
     if data.get("result") != "success":
@@ -251,6 +447,11 @@ def _cg_trending() -> list:
 
 
 RSS_FEEDS = [
+    ("financialjuice.com", "https://www.financialjuice.com/feed.ashx?xy=rss"),
+    ("wsj.com", "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain"),
+    ("benzinga.com", "https://www.benzinga.com/feed"),
+    ("watcher.guru", "https://watcher.guru/news/feed"),
+    ("zerohedge.com", "https://cms.zerohedge.com/fullrss2.xml"),
     ("coindesk.com", "https://www.coindesk.com/arc/outboundfeeds/rss/"),
     ("cointelegraph.com", "https://cointelegraph.com/rss"),
     ("theblock.co", "https://www.theblock.co/rss.xml"),
@@ -261,8 +462,182 @@ RSS_FEEDS = [
     ("u.today", "https://u.today/rss"),
     ("cryptoslate.com", "https://cryptoslate.com/feed/"),
     ("bitcoinmagazine.com", "https://bitcoinmagazine.com/feed"),
+    ("cryptobriefing.com", "https://cryptobriefing.com/feed/"),
+    ("wublockchain", "https://wublock.substack.com/feed"),
 ]
 _RSS_PER_FEED = 12   # one prolific outlet must never drown the rest
+_NEWS_PER_DOMAIN = 4
+
+_DOMAIN_SIGNAL = {
+    "financialjuice.com": 5.0,
+    "wsj.com": 4.5,
+    "benzinga.com": 3.0,
+    "zerohedge.com": 4.0,
+    "watcher.guru": 4.0,
+    "lookonchain.com": 4.0,
+    "coindesk.com": 3.0,
+    "cointelegraph.com": 3.0,
+    "theblock.co": 3.0,
+    "decrypt.co": 2.0,
+    "beincrypto.com": 2.0,
+    "newsbtc.com": 2.0,
+    "ambcrypto.com": 2.0,
+    "u.today": 2.0,
+    "cryptoslate.com": 2.0,
+    "bitcoinmagazine.com": 2.0,
+    "cryptobriefing.com": 2.0,
+    "wublockchain": 3.0,
+}
+
+_NEWS_TAGS = {
+    "macro": ("fed", "fomc", "powell", "cpi", "inflation", "pce", "jobs",
+              "payroll", "treasury", "yield", "rate", "rates", "dollar",
+              "dxy", "recession", "tariff", "gdp", "oil", "gold"),
+    "equity": ("stock", "stocks", "nasdaq", "s&p", "dow", "earnings",
+               "shares", "ipo", "softbank", "openai", "nvidia", "tesla"),
+    "crypto": ("bitcoin", "btc", "ethereum", "eth", "crypto", "token",
+               "binance", "coinbase", "solana", "xrp", "bnb", "doge"),
+    "onchain": ("whale", "wallet", "transfer", "deposit", "withdraw",
+                "bridge", "unlock", "staking", "on-chain", "onchain"),
+    "stablecoins": ("stablecoin", "stablecoins", "usdc", "usdt", "tether",
+                    "circle", "reserve", "mint", "redeem"),
+    "defi": ("defi", "dex", "tvl", "aave", "uniswap", "curve", "morpho",
+             "lend", "liquidation", "perp"),
+    "policy": ("sec", "cftc", "mifid", "mica", "lawsuit", "court",
+               "regulator", "regulatory", "license", "sanction"),
+    "flow": ("etf", "inflow", "outflow", "volume", "open interest",
+             "liquidity", "funding", "basis", "shorts", "longs"),
+}
+
+# Lane = which desk a headline belongs to. Squawk is set by the wire itself;
+# macro is inferred from the outlet; everything else is the crypto lane.
+_MACRO_DOMAINS = {"wsj.com", "benzinga.com", "financialjuice.com", "zerohedge.com"}
+
+_NEGATIVE_NEWS_TERMS = (
+    "head coach", "premier league", "football club", "soccer", "tennis",
+    "nba", "nfl", "mlb", "cricket", "movie", "trailer", "actor",
+    "celebrity", "recipe", "travel guide", "episode recap",
+)
+
+_STATIC_SYMBOLS = {
+    "BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "TRX", "LINK",
+    "AVAX", "SUI", "HYPE", "USDT", "USDC", "DAI", "FDUSD", "USDE",
+    "AAVE", "UNI", "MKR", "CRV", "ENA", "TIA", "OP", "ARB", "TON",
+    "PEPE", "WIF", "BONK", "PUMP", "TRON", "NVIDIA", "NVDA", "TSLA",
+    "AAPL", "MSFT", "GOOGL", "META", "COIN", "MSTR", "SPY", "QQQ",
+}
+
+_NAME_SYMBOLS = {
+    "bitcoin": "BTC",
+    "ethereum": "ETH",
+    "solana": "SOL",
+    "binance coin": "BNB",
+    "bnb": "BNB",
+    "xrp": "XRP",
+    "dogecoin": "DOGE",
+    "tether": "USDT",
+    "usdc": "USDC",
+    "circle": "USDC",
+    "tron": "TRX",
+}
+
+
+def _domain_key(domain: Any) -> str:
+    return str(domain or "unknown").lower().replace("www.", "")
+
+
+def _news_time_score(iso: str | None) -> float:
+    if not iso:
+        return 0.0
+    try:
+        age = time.time() - datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        ).timestamp()
+    except ValueError:
+        return 0.0
+    if age < 0:
+        return 0.0
+    if age <= 30 * 60:
+        return 3.0
+    if age <= 2 * 3600:
+        return 2.0
+    if age <= 8 * 3600:
+        return 1.0
+    if age >= 7 * 86400:
+        return -2.0
+    return 0.0
+
+
+def _term_hit(lower: str, term: str) -> bool:
+    if " " in term or "-" in term:
+        return term in lower
+    if len(term) <= 4:
+        return re.search(rf"\b{re.escape(term)}\b", lower) is not None
+    return term in lower
+
+
+def _classify_news(item: JsonDict, dynamic_symbols: set[str]) -> JsonDict | None:
+    title = html.unescape(str(item.get("title") or "")).strip()
+    if not title:
+        return None
+    lower = title.lower()
+    # squawk handles keep their display casing (@DeItaone), outlets normalize
+    domain = (str(item.get("domain")) if item.get("lane") == "squawk" and item.get("domain")
+              else _domain_key(item.get("domain")))
+    negative = any(term in lower for term in _NEGATIVE_NEWS_TERMS)
+
+    tags: list[str] = []
+    for tag, terms in _NEWS_TAGS.items():
+        if any(_term_hit(lower, term) for term in terms):
+            tags.append(tag)
+
+    symbols = set(_STATIC_SYMBOLS) | dynamic_symbols
+    matched = []
+    for hint in (item.get("symbols_hint") or []):   # wire-tagged coins first
+        if hint and hint not in matched:
+            matched.append(hint)
+    for raw in re.findall(r"(?<![A-Z0-9])\$?([A-Z][A-Z0-9]{1,9})(?![A-Z0-9])", title):
+        if raw in symbols and raw not in matched:
+            matched.append(raw)
+        if len(matched) >= 4:
+            break
+    for name, sym in _NAME_SYMBOLS.items():
+        if len(matched) >= 4:
+            break
+        if _term_hit(lower, name) and sym in symbols and sym not in matched:
+            matched.append(sym)
+
+    lane = item.get("lane") or ("macro" if domain in _MACRO_DOMAINS else "crypto")
+    score = _DOMAIN_SIGNAL.get(domain, 1.0) + _news_time_score(item.get("time"))
+    score += min(6.0, len(tags) * 1.25 + len(matched) * 1.2)
+    if lane == "squawk":
+        score += 2.0     # the wire is fast, but must not drown the outlets
+    if any(w in lower for w in ("breaking", "urgent", "alert", "launches", "secures",
+                                "raises", "files", "approves", "hack", "exploit")):
+        score += 1.5
+    if negative and not tags and not matched:
+        score -= 8.0
+    if score < 2.0:
+        return None
+
+    ranked_tags = tags[:4] or (["market-wire"] if _DOMAIN_SIGNAL.get(domain, 0) >= 3 else ["market"])
+    reason_bits = []
+    if matched:
+        reason_bits.append("symbol match " + ", ".join(matched[:3]))
+    if ranked_tags:
+        reason_bits.append("tags " + ", ".join(ranked_tags[:3]))
+    if domain in _DOMAIN_SIGNAL:
+        reason_bits.append("source priority")
+    out = dict(item)
+    out.pop("symbols_hint", None)
+    out["title"] = title[:220]
+    out["domain"] = domain
+    out["lane"] = lane
+    out["tags"] = ranked_tags
+    out["matched_symbols"] = matched[:4]
+    out["impact"] = max(1, min(99, int(round(score * 10))))
+    out["reason"] = " · ".join(reason_bits[:3]) or "market relevance"
+    return out
 
 
 def _rss_news() -> list:
@@ -274,12 +649,14 @@ def _rss_news() -> list:
     errors = []
     for domain, url in RSS_FEEDS:
         try:
-            root = ET.fromstring(fetch_bytes(url, timeout=6.0, accept="application/rss+xml, application/xml, text/xml"))
+            root = ET.fromstring(fetch_bytes(url, timeout=9.0, accept="application/rss+xml, application/xml, text/xml"))
             n_feed = 0
             for it in root.iter("item"):
                 if n_feed >= _RSS_PER_FEED:
                     break
                 title = (it.findtext("title") or "").strip()
+                if title.startswith("FinancialJuice:"):
+                    title = title[len("FinancialJuice:"):].strip()
                 link = (it.findtext("link") or "").strip()
                 pub = it.findtext("pubDate")
                 iso = None
@@ -323,8 +700,18 @@ SOURCES: dict[str, TTLSource] = {
                   "on-chain tokenized equities — Tesla, NVIDIA, SpaceX… track the real stock"),
         TTLSource("news", "GDELT news", "news", 600.0, _gdelt_news,
                   "open crypto news headlines (GDELT doc 2.0)"),
-        TTLSource("rss", "Market news RSS ×10", "news", 240.0, _rss_news,
-                  "CoinDesk, Cointelegraph, The Block, Decrypt, BeInCrypto, NewsBTC, AMBCrypto, U.Today…"),
+        TTLSource("rss", "Market news RSS ×17", "news", 240.0, _rss_news,
+                  "FinancialJuice, WSJ Markets, Benzinga, Watcher Guru, ZeroHedge, CoinDesk, "
+                  "Cointelegraph, The Block, Decrypt, WuBlockchain, BeInCrypto, NewsBTC…"),
+        TTLSource("tree_news", "Tree of Alpha wire", "news", 60.0, _tree_news,
+                  "real-time squawk: Walter Bloomberg, Tree News, Watcher Guru + exchange headlines"),
+        TTLSource("lookonchain", "Lookonchain feed", "news", 300.0, _lookonchain_news,
+                  "public Lookonchain headline feed endpoint — headline/link/time only"),
+        # Yahoo bans hot IPs for a while; fast retries only extend the ban, so
+        # this source backs off 5 minutes on failure and serves stale forever.
+        TTLSource("yahoo_world", "Global markets (Yahoo Finance)", "context", 180.0, _yahoo_world,
+                  "US/EU/Asia/India indices, top stocks, commodities, FX, yields — one bounded call",
+                  retry_sec=300.0),
         TTLSource("trending", "CoinGecko trending", "context", 600.0, _cg_trending,
                   "trending searches on CoinGecko"),
         TTLSource("fx", "FX rates (open.er-api.com)", "context", 21600.0, _fx_rates,
@@ -339,7 +726,8 @@ def warm_sources() -> None:
     """Background warm-up so the first Market page load is instant."""
     def run() -> None:
         for sid in ("coingecko_global", "fng", "coingecko", "llama_stables", "llama_tvl",
-                    "llama_dex", "cg_stocks", "fx", "rss", "trending", "news"):
+                    "llama_dex", "cg_stocks", "fx", "tree_news", "yahoo_world", "rss",
+                    "lookonchain", "trending", "news"):
             try:
                 SOURCES[sid].get()
             except Exception:  # noqa: BLE001
@@ -620,13 +1008,22 @@ def coin_by_base(base: str) -> Optional[JsonDict]:
 
 def news_context(limit: int = 28) -> JsonDict:
     """Headlines merged from every live news source (RSS + GDELT), newest
-    first, deduped by title. Non-blocking: no request ever waits on a feed."""
+    first, deduped by title and diversified by source. Non-blocking: no
+    request ever waits on a feed."""
     items: list = []
     sources_used: list = []
+    tree = SOURCES["tree_news"].get_nowait()
+    if tree:
+        items.extend(tree)
+        sources_used.append("tree")
     rss = SOURCES["rss"].get_nowait()
     if rss:
         items.extend(rss)
         sources_used.append("rss")
+    loc = SOURCES["lookonchain"].get_nowait()
+    if loc:
+        items.extend(loc)
+        sources_used.append("lookonchain")
     gd = SOURCES["news"].get_nowait()
     if gd:
         for a in (gd.get("articles") or []):
@@ -640,21 +1037,116 @@ def news_context(limit: int = 28) -> JsonDict:
     if not items:
         return {
             "status": "unavailable",
-            "error": SOURCES["rss"].last_error or SOURCES["news"].last_error,
-            "options": ["RSS ×10: CoinDesk, Cointelegraph, The Block, Decrypt, BeInCrypto, "
-                        "NewsBTC, AMBCrypto, U.Today… (keyless, retrying)",
+            "error": SOURCES["tree_news"].last_error or SOURCES["rss"].last_error
+                     or SOURCES["lookonchain"].last_error or SOURCES["news"].last_error,
+            "options": ["Tree of Alpha squawk wire (keyless, retrying)",
+                        "RSS ×17: WSJ, Benzinga, FinancialJuice, CoinDesk, Cointelegraph, "
+                        "The Block, Decrypt… (keyless, retrying)",
+                        "Lookonchain public feed (keyless, retrying)",
                         "GDELT (keyless, retrying)"],
             "items": [],
+            "coverage": news_coverage(),
         }
     seen_titles: set = set()
     unique = []
+    dynamic_symbols = {str(c.get("base") or "").upper() for c in top_coins(180).get("coins", [])}
     for it in sorted(items, key=lambda i: i["time"] or "", reverse=True):
-        key = it["title"].lower()[:80]
+        scored = _classify_news(it, dynamic_symbols)
+        if not scored:
+            continue
+        key = re.sub(r"\W+", " ", scored["title"].lower()).strip()[:110]
         if key in seen_titles:
             continue
         seen_titles.add(key)
-        unique.append(it)
-    return {"status": "live", "source": "+".join(sources_used), "items": unique[:limit]}
+        unique.append(scored)
+    if not unique:
+        return {
+            "status": "filtered",
+            "source": "+".join(sources_used),
+            "source_counts": {},
+            "items": [],
+            "coverage": news_coverage(),
+            "note": "sources returned headlines, but none passed market relevance scoring",
+        }
+
+    counts: dict[str, int] = {}
+    lane_counts: dict[str, int] = {}
+    squawk_cap = max(4, limit // 2)   # the wire never drowns the outlets
+    diversified = []
+    overflow = []
+    for it in sorted(unique, key=lambda i: (i.get("impact") or 0, i.get("time") or ""), reverse=True):
+        domain = str(it.get("domain") or "unknown")
+        lane = str(it.get("lane") or "crypto")
+        n = counts.get(domain, 0)
+        if n < _NEWS_PER_DOMAIN and not (lane == "squawk" and lane_counts.get("squawk", 0) >= squawk_cap):
+            diversified.append(it)
+            counts[domain] = n + 1
+            lane_counts[lane] = lane_counts.get(lane, 0) + 1
+        else:
+            overflow.append(it)
+        if len(diversified) >= limit:
+            break
+    if len(diversified) < min(limit, len(unique)):
+        seen_ids = {id(it) for it in diversified}
+        for it in overflow:
+            if id(it) in seen_ids:
+                continue
+            diversified.append(it)
+            if len(diversified) >= limit:
+                break
+
+    source_counts: dict[str, int] = {}
+    for it in diversified:
+        domain = str(it.get("domain") or "unknown")
+        source_counts[domain] = source_counts.get(domain, 0) + 1
+    return {
+        "status": "live",
+        "source": "+".join(sources_used),
+        "source_counts": source_counts,
+        "coverage": news_coverage(),
+        "items": diversified[:limit],
+    }
+
+
+def news_coverage() -> list[JsonDict]:
+    """User-requested news providers with honest current state."""
+    ids = ("tree_news", "rss", "lookonchain", "news")
+    out = []
+    for sid in ids:
+        st = SOURCES[sid].status()
+        if sid == "tree_news":
+            st["label"] = "Squawk wire (Tree of Alpha)"
+        elif sid == "rss":
+            st["label"] = "RSS bundle: WSJ, Benzinga, FinancialJuice, Watcher Guru, ZeroHedge…"
+        elif sid == "news":
+            st["label"] = "GDELT DOC 2.0"
+        out.append(st)
+    return out
+
+
+WORLD_GROUPS = [
+    ("us", "United States"), ("europe", "Europe"), ("asia", "Asia-Pacific"),
+    ("india", "India"), ("stocks", "US stocks"), ("commodities", "Commodities"),
+    ("fx", "Currencies"), ("rates", "Rates"),
+]
+
+
+def world_markets() -> JsonDict:
+    """Global markets block: region-grouped indices + commodities + FX + rates
+    with real intraday sparklines (Yahoo Finance spark, one bounded call)."""
+    rows = SOURCES["yahoo_world"].get_nowait()
+    if not rows:
+        return {"status": "unavailable", "groups": [],
+                "error": SOURCES["yahoo_world"].last_error}
+    by: dict = {}
+    for r in rows:
+        by.setdefault(r["group"], []).append(r)
+    return {
+        "status": SOURCES["yahoo_world"].status()["status"],
+        "source": "yahoo finance",
+        "groups": [{"id": gid, "label": label, "items": by[gid]}
+                   for gid, label in WORLD_GROUPS if by.get(gid)],
+    }
 
 
 def trending() -> JsonDict:

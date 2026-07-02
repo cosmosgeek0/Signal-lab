@@ -8,6 +8,7 @@ export const DEFAULTS = {
   refreshSec: 1.6,        // live poll cadence
   basisUnit: "bps",       // "bps" | "pct"
   motion: "full",         // "full" | "reduced"
+  tapeSpeed: "normal",    // "calm" | "normal" | "fast" — px/s of the top tape
   defaultPage: "market",  // "market" | "radar"
   lang: "en",
 };

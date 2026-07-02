@@ -94,38 +94,105 @@ export function monogram(base, px) {
   return span;
 }
 
-// Local icon manifest. The browser does not load third-party token images; if
-// a bundled CC0 SVG is unavailable, the deterministic monogram is the fallback.
+// Icon manifest: bundled CC0 SVG bases + server-resolved REAL logo URLs for
+// every tracked asset (CoinGecko top-250 + /search lookups + tokenized stocks,
+// all cached server-side). Coverage grows over time, so we re-fetch on a
+// schedule and notify subscribers — monograms upgrade to real logos in place.
+const REMOTE = {};                 // BASE -> https logo url
 const iconSubs = new Set();
 export function onIconsReady(fn) { iconSubs.add(fn); return () => iconSubs.delete(fn); }
 export function iconsReady() { return true; }
+
+// Monograms created BEFORE the manifest arrived are tracked and upgraded to
+// the real logo in place the moment a URL becomes known — a placeholder must
+// never be permanent just because it rendered early.
+const pendingMono = [];   // { el, base, size }
+
+function upgradeMonograms() {
+  for (let i = pendingMono.length - 1; i >= 0; i--) {
+    const p = pendingMono[i];
+    if (!p.el.isConnected) { pendingMono.splice(i, 1); continue; }
+    if (ICON_SET.has(p.base) || REMOTE[p.base]) {
+      p.el.replaceWith(tokenIcon(p.base, p.size));
+      pendingMono.splice(i, 1);
+    }
+  }
+}
+
+let manifestTimer = null;
+const MANIFEST_REFETCH = [8000, 25000, 60000, 300000];
+let refetchIdx = 0;
 export async function loadIconManifest() {
   try {
     const res = await fetch("/api/icon-manifest", { headers: { accept: "application/json" } });
     const man = await res.json();
     (man && man.local || []).forEach((b) => ICON_SET.add(String(b).toUpperCase()));
+    Object.entries((man && man.remote) || {}).forEach(([b, url]) => {
+      if (url) REMOTE[String(b).toUpperCase()] = url;
+    });
+    upgradeMonograms();
     for (const fn of iconSubs) { try { fn(); } catch (e) { console.error(e); } }
   } catch (e) {}
+  clearTimeout(manifestTimer);
+  const delay = MANIFEST_REFETCH[Math.min(refetchIdx++, MANIFEST_REFETCH.length - 1)];
+  manifestTimer = setTimeout(loadIconManifest, delay);
 }
 
-// Token icon resolver: 1) bundled CC0 SVG  2) polished brand-colored monogram.
-// Never a blank circle and never a browser-side third-party image request.
-export function tokenIcon(symbol, size = 26) {
-  const base = baseOf(symbol);
-  const local = ICON_SET.has(base) ? `/static/icons/${base.toLowerCase()}.svg` : null;
-  if (local) {
+const SPOTHQ = (base) =>
+  `https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons@master/svg/color/${base.toLowerCase()}.svg`;
+// CoinCap's symbol-keyed icon CDN: keyless, huge coverage — the safety net that
+// makes "a coin with no logo" effectively impossible.
+const COINCAP = (base) =>
+  `https://assets.coincap.io/assets/icons/${base.toLowerCase()}@2x.png`;
+
+// Real logo straight from a payload object (CoinGecko rows carry `image`);
+// the resolver chain is only the fallback. Use wherever a coin object exists.
+export function coinIcon(c, size = 22) {
+  if (c && c.image) {
     const img = document.createElement("img");
     img.className = "tok-ico" + sizeClass(size);
-    img.width = size; img.height = size;
-    img.loading = "lazy"; img.decoding = "async";
-    img.alt = base;
-    img.src = local;
-    img.addEventListener("error", () => {
-      img.replaceWith(monogram(base, size));
-    }, { once: true });
+    img.width = size; img.height = size; img.alt = c.base || "";
+    img.loading = "lazy"; img.referrerPolicy = "no-referrer";
+    img.addEventListener("error", () => img.replaceWith(tokenIcon(c.base || "?", size)), { once: true });
+    img.src = c.image;
     return img;
   }
-  return monogram(base, size);
+  return tokenIcon((c && c.base) || "?", size);
+}
+
+// Token icon resolver — REAL logos first, monogram only as the last resort:
+// 1) bundled CC0 SVG  2) server manifest logo (CoinGecko)  3) spothq CDN.
+// A base with no known URL yet gets a TRACKED monogram that upgrades in place
+// when the manifest resolves it. Never a blank circle, never a dead image.
+export function tokenIcon(symbol, size = 26) {
+  const base = baseOf(symbol);
+  const chain = [];
+  if (ICON_SET.has(base)) chain.push(`/static/icons/${base.toLowerCase()}.svg`);
+  if (REMOTE[base]) chain.push(REMOTE[base]);
+  chain.push(COINCAP(base), SPOTHQ(base));
+  const img = document.createElement("img");
+  img.className = "tok-ico" + sizeClass(size);
+  img.width = size; img.height = size;
+  img.loading = "lazy"; img.decoding = "async";
+  img.referrerPolicy = "no-referrer";
+  img.alt = base;
+  let i = 0;
+  img.addEventListener("error", () => {
+    i += 1;
+    if (i < chain.length) img.src = chain[i];
+    // tracked placeholder: upgrades in place if the manifest learns a URL later
+    else img.replaceWith(placeholderIcon(base, size));
+  });
+  img.src = chain[0];
+  return img;
+}
+
+// Monogram-first path used when no URL is known YET: tracked for in-place
+// upgrade once the manifest resolves the base (see upgradeMonograms).
+function placeholderIcon(base, size) {
+  const m = monogram(base, size);
+  pendingMono.push({ el: m, base, size });
+  return m;
 }
 
 function sizeClass(size) {

@@ -315,6 +315,7 @@ def build_market_overview() -> JsonDict:
     return {
         **base,
         "global": block(sources.global_overview),
+        "world": block(sources.world_markets),
         "fear_greed": block(sources.fear_greed),
         "defi": block(sources.defi_overview),
         "stablecoins": block(sources.stablecoin_overview),

@@ -5,7 +5,7 @@
 // degrades honestly when a source is down.
 
 import { h, mount } from "../lib/dom.js";
-import { icon, tokenIcon, brandColor, onIconsReady } from "../lib/icons.js";
+import { icon, tokenIcon, coinIcon, brandColor, onIconsReady } from "../lib/icons.js";
 import { api } from "../lib/api.js";
 import { store, onLive, navigate, linkTo } from "../lib/store.js";
 import { getSettings, onSettings } from "../lib/settings.js";
@@ -42,6 +42,15 @@ const MAJOR_BASES = new Set(["BTC", "ETH", "BNB", "SOL", "XRP", "DOGE"]);
 const STABLE_BASES = new Set(["USDT", "USDC", "DAI", "FDUSD", "USDS", "USDE", "TUSD", "PYUSD", "USD1"]);
 
 const px = (c) => (c && c.price_live != null ? c.price_live : c ? c.price : null);
+const trendText = (v) => (Number(v) >= 0 ? "Rising" : "Falling");
+
+// Clean signed move: arrow + tabular pct. No words, no pills — color carries
+// the direction; a single 🔥 marks genuinely hot moves.
+function moveValue(value, { hot = null } = {}) {
+  if (value == null || !isFinite(Number(value))) return "—";
+  const n = Number(value);
+  return (n >= 0 ? "↗ " : "↘ ") + fmtPct(n) + (hot != null && n >= hot ? " 🔥" : "");
+}
 
 export function renderMarket(root) {
   let ov = null;           // /api/market-overview payload
@@ -52,6 +61,30 @@ export function renderMarket(root) {
   const cleanups = [];
   const tape = buildCoinsTape();
   cleanups.push(tape.destroy);
+
+  // Repaint governor: below-fold sections paint eagerly ONCE (so audits and
+  // deep links always find real rows), then only repaint while on screen —
+  // off-screen they just mark dirty and catch up when scrolled into view.
+  // This is what keeps the 5s poll cheap on a long page.
+  const lazyState = new Map();   // el -> { seen, painted, dirty }
+  const io = typeof IntersectionObserver !== "undefined"
+    ? new IntersectionObserver((ents) => {
+        for (const e of ents) {
+          const st = lazyState.get(e.target);
+          if (!st) continue;
+          st.seen = e.isIntersecting;
+          if (st.seen && st.dirty) { const fn = st.dirty; st.dirty = null; fn(); }
+        }
+      }, { rootMargin: "280px 0px" })
+    : null;
+  cleanups.push(() => { if (io) io.disconnect(); });
+  function lazyPaint(el, fn) {
+    if (!io) { fn(); return; }
+    let st = lazyState.get(el);
+    if (!st) { st = { seen: false, painted: false, dirty: null }; lazyState.set(el, st); io.observe(el); }
+    if (!st.painted || st.seen) { st.painted = true; st.dirty = null; fn(); }
+    else st.dirty = fn;
+  }
 
   // ---- market cards (every card opens a detail sheet — no dead clicks) ----
   const cards = {};
@@ -80,7 +113,7 @@ export function renderMarket(root) {
   }
   function coinList(coins, valFn, clsFn) {
     return coins.map((c) => h("div", { class: "lb-row", onClick: () => navigate("/symbol/" + (c.binance ? c.binance.symbol : c.base + "USDT")) },
-      tokenIcon(c.base, 22), h("span", { class: "lb-name" }, c.name),
+      coinIcon(c, 22), h("span", { class: "lb-name" }, c.name),
       h("span", { class: "lb-val num " + (clsFn ? clsFn(c) : "strong") }, valFn(c))));
   }
   function openCardDetail(key) {
@@ -154,6 +187,131 @@ export function renderMarket(root) {
     card("fng", "Fear & Greed"), card("stbl", "Stablecoin supply"),
     card("tvl", "DeFi TVL"), card("uni", "Binance universe"));
 
+  const summaryKicker = h("div", { class: "ms-kicker" }, icon("activity"), h("span", {}, "Crypto market cap"));
+  const summaryValue = h("div", { class: "ms-value num" }, "—");
+  const summaryDelta = h("div", { class: "ms-delta num" }, "Connecting");
+  const summarySource = h("div", { class: "ms-source" }, "source: warming");
+  const summaryChart = h("div", { class: "ms-chart" });
+  const summaryRail = h("div", { class: "ms-rail" });
+  const summaryPanel = h("section", {
+    class: "market-summary",
+    role: "button",
+    tabindex: "0",
+    onClick: () => openCardDetail("mcap"),
+    onKeydown: (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openCardDetail("mcap");
+      }
+    },
+  },
+    h("div", { class: "ms-main" },
+      summaryKicker,
+      h("div", { class: "ms-headline" }, summaryValue, summaryDelta),
+      summaryChart,
+      summarySource),
+    summaryRail);
+
+  const lensWrap = h("section", { class: "market-lens" });
+
+  function sourceState(id) {
+    return ((ov && ov.source_status) || []).find((s) => s.id === id) || {};
+  }
+  function statusWord(st) {
+    const s = (st && st.status) || "unavailable";
+    if (s === "live") return "live";
+    if (s === "stale") return "stale";
+    if (s === "requires_key") return "key required";
+    if (s === "not_configured") return "not configured";
+    return s;
+  }
+  function lensCell(label, value, sub, cls, ic, run, state = "live") {
+    const disabled = typeof run !== "function";
+    return h("button", {
+      class: "lens-cell " + (cls || "") + (disabled ? " disabled" : ""),
+      disabled,
+      onClick: disabled ? null : run,
+    },
+      h("span", { class: "lens-ic" }, icon(ic || "activity")),
+      h("span", { class: "lens-k" }, label),
+      h("span", { class: "lens-v num" }, value || "—"),
+      h("span", { class: "lens-sub" }, sub || ""),
+      h("span", { class: "lens-state " + (state === "live" ? "ok" : state === "requires_key" || state === "not_configured" ? "muted" : "warn") },
+        statusWord({ status: state })));
+  }
+  function paintLens() {
+    if (!ov || binanceOnly()) { lensWrap.replaceChildren(); return; }
+    const g = ov.global || {};
+    const fg = ov.fear_greed || {};
+    const dx = ov.dex || {};
+    const df = ov.defi || {};
+    const st = ov.stablecoins || {};
+    const stocks = (ov.stocks && ov.stocks.items) || [];
+    const newsItems = (news && news.items) || [];
+    const topStock = [...stocks].sort((a, b) => Math.abs(b.chg24h || 0) - Math.abs(a.chg24h || 0))[0];
+    const lead = newsItems[0];
+    const cells = [
+      lensCell("Crypto breadth", g.mcap_change_24h_pct != null ? `${trendText(g.mcap_change_24h_pct)} ${fmtPct(g.mcap_change_24h_pct)}` : "warming",
+        g.mcap_usd != null ? `${fmtMoney(g.mcap_usd)} total cap` : "CoinGecko global", signClass(g.mcap_change_24h_pct), "globe", () => openCardDetail("mcap"), g.status),
+      lensCell("Funding stress", (ov.funding_top || [])[0] ? `${baseOf(ov.funding_top[0].symbol)} ${fmtFunding(ov.funding_top[0].funding_rate)}` : "warming",
+        "highest shorts-paying rate", "up", "zap", () => navigate("/funding"), "live"),
+      lensCell("DEX impulse", dx.total24h_usd != null ? fmtMoney(dx.total24h_usd) : "warming",
+        dx.change_1d_pct != null ? `${fmtPct(dx.change_1d_pct)} vs prior day` : "DefiLlama DEX volume", signClass(dx.change_1d_pct), "activity", () => openCardDetail("dex"), dx.status),
+      lensCell("Stables float", st.total_usd != null ? fmtMoney(st.total_usd) : "warming",
+        st.usdt_share_pct != null ? `USDT ${st.usdt_share_pct.toFixed(1)}% · USDC ${st.usdc_share_pct.toFixed(1)}%` : "DefiLlama stables", "", "database", () => openCardDetail("stbl"), st.status),
+      lensCell("Tokenized equities", topStock ? `${topStock.base} ${fmtPct(topStock.chg24h)}` : (stocks.length ? `${stocks.length} wrappers` : "warming"),
+        topStock ? `${topStock.name} · CoinGecko tokenized-stock` : "on-chain stock wrappers, not cash exchange quotes",
+        topStock ? signClass(topStock.chg24h) : "", "columns", () => { tab = "stocks"; buildTabs(); paintPriceHead(); paintPrices(); stocksWrap.scrollIntoView({ behavior: "smooth", block: "start" }); }, (ov.stocks || {}).status),
+      lensCell("News pulse", lead && lead.impact ? `${lead.impact} / 100` : "warming",
+        lead ? `top story: ${(lead.tags || ["market"])[0]} · ${lead.domain}` : "RSS + GDELT + Lookonchain", "", "radar", () => newsRail.scrollIntoView({ behavior: "smooth", block: "start" }), (news && news.status) || "idle"),
+      lensCell("DeFi TVL", df.tvl_usd != null ? fmtMoney(df.tvl_usd) : "warming",
+        "DefiLlama chain/protocol TVL", "", "candles", () => openCardDetail("tvl"), df.status),
+    ];
+    mount(lensWrap,
+      h("div", { class: "lens-head" },
+        h("div", {}, h("h2", { class: "lens-title" }, "Market intelligence"), h("p", { class: "lens-copy" }, "Every tile is a live keyless source — nothing faked, nothing key-gated.")),
+        h("button", { class: "mini-btn", onClick: () => openDataSheet() }, icon("database"), "Sources")),
+      h("div", { class: "lens-grid" }, cells));
+  }
+
+  function summaryAction(label, value, sub, cls, ic, run) {
+    return h("button", { class: "ms-action " + (cls || ""), onClick: (e) => { e.stopPropagation(); run(); } },
+      h("span", { class: "ms-ic" }, icon(ic || "activity")),
+      h("span", { class: "ms-label" }, label),
+      h("span", { class: "ms-act-v num" }, value == null ? "—" : value),
+      h("span", { class: "ms-act-sub" }, sub || ""));
+  }
+
+  function paintSummary() {
+    if (!ov) return;
+    const g = ov.global || {};
+    const gh = ov.global_history || {};
+    const fg = ov.fear_greed || {};
+    const dx = ov.dex || {};
+    const st = ov.stablecoins || {};
+    const m = ov.metrics || {};
+    summaryValue.textContent = fmtMoney(g.mcap_usd);
+    const chg = Number(g.mcap_change_24h_pct);
+    summaryDelta.textContent = isFinite(chg) ? `${trendText(chg)} ${fmtPct(chg)} in 24h` : "Waiting for global change";
+    summaryDelta.className = "ms-delta num " + signClass(chg);
+    summarySource.textContent = `source: ${g.source || "global context"} · ${g.status || "warming"} · click for dominance and breadth`;
+    const series = gh.mcap || [];
+    if (series.length > 6) {
+      summaryChart.innerHTML = sparkArea(series, 760, 214, signClass(chg) === "down" ? "var(--down)" : "var(--up)", { dots: true, endDot: true });
+    } else {
+      summaryChart.innerHTML = `<div class="ms-empty">Global history is warming; live Binance basis remains available.</div>`;
+    }
+    const btcDom = g.btc_dominance != null ? "BTC " + Number(g.btc_dominance).toFixed(1) + "%" : "—";
+    const ethDom = g.eth_dominance != null ? "ETH " + Number(g.eth_dominance).toFixed(1) + "%" : "";
+    const fngCls = fg.value != null ? (fg.value <= 25 ? "down" : fg.value >= 75 ? "up" : "warn") : "";
+    mount(summaryRail,
+      summaryAction("Binance feed", `${m.live_symbols ?? 0}/${m.total_symbols ?? 0}`, "live pairs tracked locally", "up", "wifi", () => openDataSheet()),
+      summaryAction("Dominance", btcDom, ethDom, "", "target", () => openCardDetail("dom")),
+      summaryAction("DEX volume", fmtMoney(dx.total24h_usd), dx.change_1d_pct != null ? `${fmtPct(dx.change_1d_pct)} 24h` : "DefiLlama", signClass(dx.change_1d_pct), "activity", () => openCardDetail("dex")),
+      summaryAction("Risk tone", fg.value != null ? `${fg.value} / 100` : "—", fg.label || "Fear & Greed", fngCls, "gauge", () => openCardDetail("fng")),
+      summaryAction("Stables", fmtMoney(st.total_usd), st.usdt_share_pct != null ? `USDT ${st.usdt_share_pct.toFixed(1)}%` : "stablecoin supply", "", "database", () => openCardDetail("stbl")));
+  }
+
   function setCard(key, value, fmt, { delta, deltaCls, spark, sparkColor, src, srcState } = {}) {
     const c = cards[key];
     if (value == null || !isFinite(Number(value))) {
@@ -167,7 +325,8 @@ export function renderMarket(root) {
     c.d.className = "card-delta num " + (deltaCls || "");
     if (spark && spark.length >= 6) {
       const up = spark[spark.length - 1] >= spark[0];
-      c.s.innerHTML = sparkline(spark, 150, 34, sparkColor || (up ? "var(--up)" : "var(--down)"));
+      // Coinbase-style dotted area + end marker — texture, not just a line
+      c.s.innerHTML = sparkArea(spark, 150, 40, sparkColor || (up ? "var(--up)" : "var(--down)"), { dots: true, endDot: true });
     } else c.s.innerHTML = "";
     c.src.textContent = (src || "") + (srcState && srcState !== "live" ? " · " + srcState : "");
     c.src.className = "card-src" + (srcState === "live" ? " ok" : "");
@@ -214,9 +373,9 @@ export function renderMarket(root) {
         src: "alternative.me", srcState: fg.status });
       cards.fng.v.classList.add("fng-" + fngBand(fg.value));
       cards.fng.s.innerHTML = gaugeSvg(fg.value);
-      cards.fng.d.textContent = fngEmoji(fg.value) + " 30d range " +
+      cards.fng.d.textContent = fngBandLabel(fg.value) + " · 30d range " +
         Math.min(...(fg.history || [{value:fg.value}]).map((p) => p.value)) +
-        "–" + Math.max(...(fg.history || [{value:fg.value}]).map((p) => p.value));
+        "-" + Math.max(...(fg.history || [{value:fg.value}]).map((p) => p.value));
     } else setCard("fng", null, null, { src: "alternative.me", srcState: fg.status });
     if (st.total_usd != null) {
       setCard("stbl", st.total_usd, fmtMoney, { src: "defillama", srcState: st.status });
@@ -234,7 +393,7 @@ export function renderMarket(root) {
       src: "binance", srcState: "live" });
   }
   function fngBand(v) { return v <= 25 ? "fear" : v >= 75 ? "greed" : "mid"; }
-  function fngEmoji(v) { return v <= 20 ? "😱" : v <= 40 ? "😨" : v <= 60 ? "😐" : v <= 80 ? "🙂" : "🤑"; }
+  function fngBandLabel(v) { return v <= 25 ? "Risk-off" : v >= 75 ? "Euphoric" : "Balanced"; }
   // donut — composition at a glance (dominance), not another line
   function donutSvg(parts) {
     const cx = 27, cy = 26, r = 19, C = 2 * Math.PI * r;
@@ -249,17 +408,22 @@ export function renderMarket(root) {
       `<text x="58" y="${15 + i * 15}" font-size="10" fill="var(--muted)"><tspan fill="${p.color}">●</tspan> ${p.label} <tspan fill="var(--text)" font-weight="600">${p.pct.toFixed(1)}%</tspan></text>`).join("");
     return `<svg viewBox="0 0 150 52" style="width:100%;height:100%;display:block">${segs}${legend}</svg>`;
   }
-  // daily volume bars (DefiLlama-style) — history as bars, not a line
+  // daily volume bars, Pyth-style: thin quiet grey bars, the CURRENT day in
+  // accent with a dot cap — history as texture, today as the signal
   function barsSvg(vals, W = 150, H = 46) {
     const v = (vals || []).filter((x) => isFinite(x)).slice(-28);
     if (v.length < 3) return "";
     const max = Math.max(...v) || 1;
     const bw = W / v.length;
-    return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:100%;display:block" preserveAspectRatio="none">` +
+    const barW = Math.max(1.4, Math.min(3, bw * 0.42));
+    return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:100%;display:block">` +
       v.map((x, i) => {
-        const bh = Math.max(1.5, (x / max) * (H - 4));
+        const bh = Math.max(2, (x / max) * (H - 8));
+        const cx = i * bw + bw / 2;
         const last = i === v.length - 1;
-        return `<rect x="${(i * bw + 0.8).toFixed(1)}" y="${(H - bh).toFixed(1)}" width="${Math.max(1, bw - 1.6).toFixed(1)}" height="${bh.toFixed(1)}" rx="1" fill="var(--accent)" opacity="${last ? 1 : 0.45}"/>`;
+        const fill = last ? "var(--accent)" : "var(--line-strong)";
+        const cap = last ? `<circle cx="${cx.toFixed(1)}" cy="${(H - bh - 3).toFixed(1)}" r="2.3" fill="var(--accent)"/>` : "";
+        return `<rect x="${(cx - barW / 2).toFixed(1)}" y="${(H - bh).toFixed(1)}" width="${barW.toFixed(1)}" height="${bh.toFixed(1)}" rx="${(barW / 2).toFixed(1)}" fill="${fill}"/>` + cap;
       }).join("") + "</svg>";
   }
   // semicircle gauge (0-100): colored bands + needle — not another line chart
@@ -375,9 +539,8 @@ export function renderMarket(root) {
       }
       countUp(sc.px, s.price, fmtPrice);
       const up = (s.chg24h || 0) >= 0;
-      sc.chg.textContent = s.chg24h != null
-        ? (up ? "↗ " : "↘ ") + fmtPct(s.chg24h) + (Math.abs(s.chg24h) >= 8 ? " 🔥" : "")
-        : "—";
+      sc.chg.replaceChildren();
+      mount(sc.chg, s.chg24h != null ? moveValue(s.chg24h, { hot: 8 }) : "—");
       sc.chg.className = "sc-chg num " + signClass(s.chg24h);
       const vals = s.spark || [];
       const sig = vals.length + ":" + vals[vals.length - 1];
@@ -388,7 +551,20 @@ export function renderMarket(root) {
     }
   }
   function buildStockCard(s) {
-    const img = tokenIcon(s.base, 28);
+    // official company logo first (Parqet's keyless ticker CDN — crisp, real
+    // brand marks), then the wrapper-token image, then the resolver
+    const chain = [`https://assets.parqet.com/logos/symbol/${encodeURIComponent(s.base)}?format=png&size=64`];
+    if (s.image) chain.push(s.image);
+    const img = document.createElement("img");
+    img.className = "tok-ico sc-logo"; img.width = 28; img.height = 28; img.alt = s.base;
+    img.referrerPolicy = "no-referrer"; img.loading = "lazy";
+    let ci = 0;
+    img.addEventListener("error", () => {
+      ci += 1;
+      if (ci < chain.length) img.src = chain[ci];
+      else img.replaceWith(tokenIcon(s.base, 28));
+    });
+    img.src = chain[0];
     const pxEl = h("div", { class: "sc-px num" });
     const chg = h("div", { class: "sc-chg num" });
     const spark = h("div", { class: "sc-spark" });
@@ -490,14 +666,14 @@ export function renderMarket(root) {
   function cellFor(col, c, i) {
     switch (col.key) {
       case "rank": return h("td", { class: "l idx w-idx" }, c.rank ?? i + 1);
-      case "token": return h("td", { class: "l" }, h("div", { class: "tok" }, tokenIcon(c.base, 32),
+      case "token": return h("td", { class: "l" }, h("div", { class: "tok" }, coinIcon(c, 32),
         h("div", { class: "tok-meta" }, h("span", { class: "tok-name" }, c.name),
           h("span", { class: "tok-sub num" }, c.base + (c.kind === "stock" ? " · stock" : "")))));
       case "spark": return h("td", { class: "l col-hide-xs", html: `<span class="sparkbox">${sparkline(c.spark || [], 96, 32, c.chg7d != null && c.chg7d < 0 ? "var(--down)" : "var(--up)")}</span>` });
       case "price": return priceCell(c);
       case "chg1h": return h("td", { class: "num col-hide-sm " + signClass(c.chg1h) }, c.chg1h != null ? fmtPct(c.chg1h) : "—");
       case "chg24h": return h("td", { class: "num " + signClass(c.chg24h) },
-        c.chg24h != null ? (c.chg24h >= 0 ? "↗ " : "↘ ") + fmtPct(c.chg24h) + (c.chg24h >= 15 ? " 🔥" : "") : "—");
+        c.chg24h != null ? moveValue(c.chg24h, { hot: 15 }) : "—");
       case "chg7d": return h("td", { class: "num col-hide-sm " + signClass(c.chg7d) }, c.chg7d != null ? fmtPct(c.chg7d) : "—");
       case "mcap": return h("td", { class: "num" }, fmtMoney(c.mcap));
       case "volume": return h("td", { class: "num col-hide-sm muted" }, fmtMoney(c.vol_live ?? c.volume));
@@ -546,7 +722,7 @@ export function renderMarket(root) {
   }
   function coinPopover(c) {
     return h("div", {},
-      h("div", { class: "hp-head" }, tokenIcon(c.base, 22), h("b", {}, c.name), h("span", { class: "muted" }, "#" + (c.rank ?? "—"))),
+      h("div", { class: "hp-head" }, coinIcon(c, 22), h("b", {}, c.name), h("span", { class: "muted" }, "#" + (c.rank ?? "—"))),
       (c.spark || []).length > 2 ? h("div", { class: "hp-chart", html: sparkArea(c.spark, 220, 44, (c.chg7d || 0) < 0 ? "var(--down)" : "var(--up)") }) : null,
       popRow("Price", fmtPrice(px(c))),
       popRow("24h", c.chg24h != null ? fmtPct(c.chg24h) : "—", signClass(c.chg24h)),
@@ -555,8 +731,15 @@ export function renderMarket(root) {
       h("div", { class: "hp-src" }, `${(ov.top_coins || {}).source || "—"} · 7d spark — click to open`));
   }
 
-  // ---- live news rail (lead story + fast feed, favicons, ticker chips) ----
-  const newsRail = h("aside", { class: "news-rail" });
+  // ---- live news rail (squawk wire + outlets; lanes, live pulse, chips) ----
+  const newsRail = h("aside", { class: "news-rail", id: "sec-news" });
+  let newsLane = "all";                  // all | squawk | macro | crypto
+  let seenNewsKeys = new Set();          // entrance animation for new stories
+  const timeRefs = [];                   // [{el, iso}] — self-updating "Xm ago"
+  const newsKey = (it) => (it.title || "").toLowerCase().replace(/\W+/g, " ").slice(0, 90);
+  const LANES = [
+    ["all", "All"], ["squawk", "Squawk"], ["macro", "Macro"], ["crypto", "Crypto"],
+  ];
   const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   function favicon(domain) {
     const mark = h("span", { class: "nr-fav nr-fav-local", "aria-hidden": "true" },
@@ -583,58 +766,118 @@ export function renderMarket(root) {
         out.push(h("button", {
           class: "nr-chip num",
           onClick: (e) => { e.preventDefault(); e.stopPropagation(); navigate("/symbol/" + (c.binance ? c.binance.symbol : c.base + "USDT")); },
-        }, tokenIcon(c.base, 14), c.base));
+        }, coinIcon(c, 14), c.base));
       }
     }
     return out;
   }
   function newsMeta(it) {
+    const t = h("span", { class: "num nr-time" }, timeAgo(it.time));
+    if (it.time) timeRefs.push({ el: t, iso: it.time });
     return h("div", { class: "nr-meta" }, favicon(it.domain),
-      h("span", { class: "num nr-time" }, timeAgo(it.time)),
-      h("span", {}, it.domain || "source"), newBadge(it));
+      t,
+      h("span", { class: it.lane === "squawk" ? "nr-handle" : "" }, it.domain || "source"),
+      it.lane && it.lane !== "crypto" ? h("span", { class: "nr-lane nr-lane-" + it.lane }, it.lane) : null,
+      // high-impact stories get a quiet flag, not a cryptic code
+      it.impact >= 70 ? h("span", { class: "nr-impact num", title: (it.reason || "impact score") + " · " + it.impact + "/100" }, "★") : null,
+      newBadge(it));
+  }
+  function newsTags(it) {
+    const tags = (it.tags || []).slice(0, 3);
+    const syms = (it.matched_symbols || []).slice(0, 3);
+    if (!tags.length && !syms.length) return null;
+    return h("div", { class: "nr-tags" },
+      tags.map((t) => h("span", { class: "nr-tag" }, t)),
+      syms.map((s) => h("button", {
+        class: "nr-chip nr-chip-tight num",
+        onClick: (e) => { e.preventDefault(); e.stopPropagation(); navigate("/symbol/" + s + "USDT"); },
+      }, s)));
+  }
+  function newsCoverageStrip() {
+    const cov = (news && news.coverage) || [];
+    if (!cov.length) return null;
+    const SHORT = { tree_news: "Squawk wire", rss: "Outlets ×17", lookonchain: "Lookonchain", news: "GDELT" };
+    const preferred = ["tree_news", "rss", "lookonchain", "news"];   // keyless live feeds only
+    const rows = preferred.map((id) => cov.find((c) => c.id === id)).filter(Boolean);
+    return h("div", { class: "nr-coverage" }, rows.map((c) => {
+      const st = c.status || "idle";
+      return h("span", { class: "nr-cov " + st, title: (c.label || "") + (c.detail ? " — " + c.detail : "") },
+        h("span", { class: "nr-cov-dot" }), SHORT[c.id] || c.label,
+        h("b", {}, statusWord(c)));
+    }));
+  }
+  function newsLaneStrip(items) {
+    const counts = { all: items.length };
+    items.forEach((it) => {
+      const l = it.lane || "crypto";
+      counts[l] = (counts[l] || 0) + 1;
+    });
+    return h("div", { class: "nr-sources" }, LANES.map(([id, label]) => {
+      if (id !== "all" && !counts[id]) return null;
+      return h("button", {
+        class: "nr-source" + (newsLane === id ? " active" : ""),
+        onClick: () => { newsLane = id; paintPulse(); },
+      }, h("span", {}, label), h("span", { class: "num" }, counts[id] || 0));
+    }).filter(Boolean));
   }
   function paintPulse() {
     if (binanceOnly()) { newsRail.replaceChildren(); return; }
-    const nSources = news && news.items ? new Set(news.items.map((i) => i.domain)).size : 0;
+    const items = (news && news.items) || [];
+    if (newsLane !== "all" && !items.some((it) => (it.lane || "crypto") === newsLane)) newsLane = "all";
+    const filtered = newsLane === "all" ? items : items.filter((it) => (it.lane || "crypto") === newsLane);
+    const nSources = new Set(items.map((it) => it.domain || "source")).size;
+    timeRefs.length = 0;
     const head = h("div", { class: "nr-head" },
-      h("span", { class: "nr-live" }), h("h2", { class: "sec-title", style: { fontSize: "17px" } }, "Live news"),
+      h("span", { class: "nr-live " + ((news && news.status) || "idle") }),
+      h("h2", { class: "sec-title", style: { fontSize: "17px" } }, "Live news"),
       h("span", { class: "sec-note", style: { marginLeft: "auto" } },
-        nSources ? nSources + " sources · 60s refresh" : "…"));
-    if (!news || !news.items || !news.items.length) {
-      mount(newsRail, head, h("div", { class: "ghost-tile" }, icon("info"),
+        nSources ? `${filtered.length} headlines · ${nSources} sources` : "…"));
+    if (!items.length) {
+      mount(newsRail, head, newsCoverageStrip(), h("div", { class: "ghost-tile" }, icon("info"),
         h("div", {},
           h("div", { class: "gt-title" }, "Headlines loading"),
-          h("div", { class: "gt-sub" }, "10 feeds: CoinDesk, Cointelegraph, The Block, Decrypt, BeInCrypto, NewsBTC, AMBCrypto, U.Today, CryptoSlate, Bitcoin Magazine + GDELT — never fabricated.")),
+          h("div", { class: "gt-sub" }, "The squawk wire, RSS outlets, GDELT and Lookonchain are cached server-side and appear as they warm.")),
         h("span", { class: "gt-badge" }, (news && news.status) || "connecting")));
       return;
     }
-    const [lead, ...rest] = news.items;
-    const leadEl = h("a", { class: "nr-lead", href: lead.url, target: "_blank", rel: "noopener noreferrer" },
+    const isNew = (it) => seenNewsKeys.size > 0 && !seenNewsKeys.has(newsKey(it));
+    const [lead, ...rest] = filtered;
+    const leadEl = h("a", {
+      class: "nr-lead" + (lead.lane === "squawk" ? " squawk" : "") + (isNew(lead) ? " nr-enter" : ""),
+      href: lead.url, target: "_blank", rel: "noopener noreferrer" },
       newsMeta(lead),
       h("div", { class: "nr-lead-title" }, lead.title),
+      newsTags(lead),
       h("div", { class: "nr-chips" }, tickerChips(lead.title)));
-    mount(newsRail, head, leadEl,
+    mount(newsRail, head, newsCoverageStrip(), newsLaneStrip(items), leadEl,
       h("div", { class: "nr-list" }, rest.slice(0, 17).map((it) => {
         const chips = tickerChips(it.title);
-        return h("a", { class: "nr-item", href: it.url, target: "_blank", rel: "noopener noreferrer" },
+        return h("a", {
+          class: "nr-item" + (it.lane === "squawk" ? " squawk" : "") + (isNew(it) ? " nr-enter" : ""),
+          href: it.url, target: "_blank", rel: "noopener noreferrer" },
           newsMeta(it),
           h("div", { class: "nr-title" }, it.title),
+          newsTags(it),
           chips.length ? h("div", { class: "nr-chips" }, chips) : null);
       })));
+    seenNewsKeys = new Set(items.map(newsKey));
   }
 
   // ---- basis & funding intelligence (Binance universe) ----
   const intelWrap = h("div", { class: "signals" });
   function paintIntel() {
     if (!ov) return;
+    const byBase = {};
+    (ov.top_coins && ov.top_coins.coins || []).forEach((c) => { byBase[c.base] = c; });
     const col = (label, path, list, valFn, clsFn) =>
       h("div", { class: "sig" },
         h("div", { class: "sig-head", onClick: () => navigate(path) },
           h("span", { class: "sig-label" }, label), h("span", { class: "sig-more" }, "Open ›")),
         (list || []).slice(0, 4).map((r) => {
+          const b = baseOf(r.symbol);
           const row = h("div", { class: "sig-row", onClick: () => navigate("/symbol/" + r.symbol) },
-            tokenIcon(r.symbol, 22),
-            h("span", { class: "sig-name" }, baseOf(r.symbol)),
+            coinIcon(byBase[b] || { base: b }, 22),
+            h("span", { class: "sig-name" }, b),
             h("span", { class: "sig-val num " + clsFn(r) }, valFn(r)));
           attachPopover(row, () => majorPopoverAny(r));
           return row;
@@ -671,7 +914,7 @@ export function renderMarket(root) {
         h("div", { class: "sig-head" }, h("span", { class: "sig-label" }, label)),
         list.slice(0, 4).map((c) => {
           const row = h("div", { class: "sig-row", onClick: () => navigate("/symbol/" + (c.binance ? c.binance.symbol : c.base + "USDT")) },
-            tokenIcon(c.base, 22),
+            coinIcon(c, 22),
             h("span", { class: "sig-name" }, c.name),
             h("span", { class: "sig-val num " + clsFn(c) }, valFn(c)));
           attachPopover(row, () => coinPopover(c));
@@ -680,11 +923,11 @@ export function renderMarket(root) {
     const byUp = [...coins].sort((a, b) => b.chg24h - a.chg24h);
     const byVol = [...coins].sort((a, b) => (b.volume || 0) - (a.volume || 0));
     mount(moversWrap,
-      col("Top gainers · 24h", byUp, (c) => (c.chg24h >= 10 ? "🔥 " : "↗ ") + fmtPct(c.chg24h), () => "up"),
-      col("Top losers · 24h", [...byUp].reverse(), (c) => "↘ " + fmtPct(c.chg24h), () => "down"),
+      col("Top gainers · 24h", byUp, (c) => moveValue(c.chg24h, { hot: 10 }), () => "up"),
+      col("Top losers · 24h", [...byUp].reverse(), (c) => moveValue(c.chg24h), () => "down"),
       col("Top volume", byVol, (c) => fmtMoney(c.vol_live ?? c.volume), () => "strong"),
       col("7d strength", [...coins].filter((c) => c.chg7d != null).sort((a, b) => b.chg7d - a.chg7d),
-        (c) => (c.chg7d >= 25 ? "🚀 " : "") + fmtPct(c.chg7d), (c) => signClass(c.chg7d)));
+        (c) => moveValue(c.chg7d, { hot: 25 }), (c) => signClass(c.chg7d)));
   }
 
   // ---- trending (CoinGecko search trending) ----
@@ -703,10 +946,109 @@ export function renderMarket(root) {
       })));
   }
 
+  // ---- world markets (US/EU/Asia/India indices · commodities · FX · rates) ----
+  // Real Yahoo Finance intraday data, one bounded server-side call. This is
+  // what makes the landing page a WORLD market surface, not a crypto-only one.
+  let worldGroup = "us";
+  const worldTabs = h("div", { class: "wm-tabs", role: "tablist" });
+  const worldStrip = h("div", { class: "wm-strip" });
+  const worldNote = h("span", { class: "sec-note" });
+  const worldWrap = h("section", { class: "wm", id: "sec-world" },
+    h("div", { class: "sec-head" }, h("h2", { class: "sec-title" }, "World markets"), worldNote),
+    worldTabs, worldStrip);
+  const wmCards = new Map();
+
+  function wmVal(it) {
+    if (it.last == null || !isFinite(it.last)) return "—";
+    if (it.group === "rates") return Number(it.last).toFixed(2) + "%";
+    const digits = it.group === "fx" ? (it.last < 20 ? 4 : 2) : 2;
+    return Number(it.last).toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  }
+  function openWorldDetail(it) {
+    openDetailSheet(it.name, "globe", () => [
+      (it.spark || []).length > 2
+        ? sheetChart(sparkArea(it.spark, 340, 120, (it.chg_pct || 0) >= 0 ? "var(--up)" : "var(--down)", { dots: true, endDot: true }), 120)
+        : null,
+      sheetRow("Last", wmVal(it), signClass(it.chg_pct)),
+      sheetRow("Change today", it.chg_pct != null ? fmtPct(it.chg_pct) : "—", signClass(it.chg_pct)),
+      sheetRow("Previous close", it.prev_close != null ? Number(it.prev_close).toLocaleString("en-US", { maximumFractionDigits: 4 }) : "—"),
+      it.currency ? sheetRow("Currency", it.currency) : null,
+      it.asof ? sheetRow("As of", new Date(it.asof * 1000).toUTCString().replace(" GMT", " UTC")) : null,
+      sheetNote("Intraday session, 15-minute closes."),
+      srcLine((ov.world || {}).status, "yahoo finance"),
+    ].filter(Boolean));
+  }
+  function buildWmCard(it) {
+    const pxEl = h("div", { class: "wm-px num" });
+    const chg = h("div", { class: "wm-chg num" });
+    const spark = h("div", { class: "wm-spark" });
+    const name = h("div", { class: "wm-name" });
+    if (it.group === "stocks") {   // real brand marks via Parqet's keyless CDN
+      const img = document.createElement("img");
+      img.className = "wm-logo"; img.width = 16; img.height = 16; img.alt = "";
+      img.loading = "lazy"; img.referrerPolicy = "no-referrer";
+      img.addEventListener("error", () => img.remove(), { once: true });
+      img.src = `https://assets.parqet.com/logos/symbol/${encodeURIComponent(it.symbol)}?format=png&size=32`;
+      name.appendChild(img);
+    }
+    name.appendChild(document.createTextNode(it.name));
+    const el = h("button", { class: "wm-card", onClick: () => openWorldDetail(wmCards.get(it.symbol).it) },
+      name, pxEl, chg, spark);
+    return { el, px: pxEl, chg, spark, it };
+  }
+  function paintWorld() {
+    if (binanceOnly()) { worldWrap.style.display = "none"; return; }
+    worldWrap.style.display = "";
+    const w = (ov && ov.world) || {};
+    const groups = w.groups || [];
+    if (!groups.length) {
+      worldNote.textContent = "source: yahoo finance · " + (w.status || "warming");
+      worldTabs.replaceChildren();
+      mount(worldStrip, h("div", { class: "wm-ghost" },
+        icon("globe"),
+        h("span", {}, "Global indices, commodities, FX and yields are warming — the provider rate-limits new sessions; data appears automatically."),
+        h("span", { class: "gt-badge" }, w.status || "connecting")));
+      wmCards.clear();
+      return;
+    }
+    if (!groups.some((g) => g.id === worldGroup)) worldGroup = groups[0].id;
+    worldNote.textContent = `source: yahoo finance · ${w.status} · real intraday data`;
+    mount(worldTabs, groups.map((g) =>
+      h("button", {
+        class: "chip" + (g.id === worldGroup ? " active" : ""), role: "tab",
+        "aria-selected": g.id === worldGroup ? "true" : "false",
+        onClick: () => { worldGroup = g.id; wmCards.clear(); paintWorld(); },
+      }, g.label, h("span", { class: "chip-n num" }, g.items.length))));
+    const items = (groups.find((g) => g.id === worldGroup) || {}).items || [];
+    if (!wmCards.size) {
+      worldStrip.replaceChildren();
+      for (const it of items) {
+        const card = buildWmCard(it);
+        wmCards.set(it.symbol, card);
+        worldStrip.appendChild(card.el);
+      }
+    }
+    for (const it of items) {
+      const card = wmCards.get(it.symbol);
+      if (!card) continue;
+      card.it = it;
+      card.px.textContent = wmVal(it);
+      card.chg.textContent = it.chg_pct != null ? moveValue(it.chg_pct) : "—";
+      card.chg.className = "wm-chg num " + signClass(it.chg_pct);
+      const vals = it.spark || [];
+      const sig = vals.length + ":" + vals[vals.length - 1];
+      if (card._k !== sig && vals.length > 2) {
+        card._k = sig;
+        card.spark.innerHTML = sparkline(vals, 92, 28, (it.chg_pct || 0) >= 0 ? "var(--up)" : "var(--down)");
+      }
+    }
+  }
+
   const binanceOnly = () => getSettings().source === "binance";
   const extSections = h("div", {});   // external sections live here (source-gated)
   function buildExtSections() {
     cardsWrap.classList.toggle("binance-only", binanceOnly());
+    summaryPanel.style.display = binanceOnly() ? "none" : "";
     if (binanceOnly()) {
       mount(extSections, h("div", { class: "ghost-tile", style: { margin: "18px 0" } },
         icon("database"),
@@ -718,7 +1060,7 @@ export function renderMarket(root) {
     }
     mount(extSections,
       stocksWrap,
-      h("div", { class: "sec-head" }, h("h2", { class: "sec-title" }, "Crypto market prices"), priceNote),
+      h("div", { class: "sec-head", id: "sec-prices" }, h("h2", { class: "sec-title" }, "Crypto market prices"), priceNote),
       h("div", { class: "table-tools" }, tabsWrap),
       priceTable,
       h("div", { class: "sec-head" }, h("h2", { class: "sec-title" }, "Top movers today"),
@@ -731,8 +1073,11 @@ export function renderMarket(root) {
     h("div", { class: "container" },
       h("div", { class: "page-head" },
         h("div", {}, h("h1", { class: "page-title" }, "Markets"), subLine), regimePill),
+      worldWrap,
       h("div", { class: "mkt-hero" },
         h("div", { class: "mkt-hero-main" },
+          summaryPanel,
+          lensWrap,
           cardsWrap,
           h("div", { class: "sec-head" }, h("h2", { class: "sec-title" }, "Majors")),
           majorsWrap,
@@ -747,14 +1092,27 @@ export function renderMarket(root) {
   buildTabs();
   paintPriceHead();
   buildExtSections();
+  paintWorld();
   paintPulse();
+  // header nav deep links: /?sec=world|prices|news scrolls to the section
+  const wantSec = new URLSearchParams(location.search).get("sec");
+  if (wantSec) {
+    setTimeout(() => {
+      const target = document.getElementById("sec-" + wantSec);
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 120);
+  }
   cleanups.push(onSettings((_, key) => {
     if (key === "source" || key === "*") { buildExtSections(); paintAll(); }
   }));
   cleanups.push(onIconsReady(() => paintAll()));
   function paintAll() {
-    paintCards(); paintMajors(); paintStocks(); paintPrices(); paintIntel(); paintHead();
-    paintTopMovers(); paintTrending(); paintPulse();
+    paintWorld(); paintSummary(); paintLens(); paintCards(); paintMajors(); paintHead();
+    lazyPaint(stocksWrap, paintStocks);
+    lazyPaint(priceTable, paintPrices);
+    lazyPaint(intelWrap, paintIntel);
+    lazyPaint(moversWrap, paintTopMovers);
+    paintTrending(); paintPulse();
     if (ov && ov.top_coins) tape.update((ov.top_coins.coins || []).map((c) => ({ ...c, price: px(c) })));
   }
 
@@ -764,7 +1122,7 @@ export function renderMarket(root) {
     const m = ov.metrics || {};
     const bits = [];
     if (g.active_cryptocurrencies) bits.push(fmtCompact(g.active_cryptocurrencies) + " assets globally");
-    bits.push(`${m.total_symbols ?? "—"} Binance pairs tracked live`);
+    bits.push(`${m.total_symbols ?? "—"} spot/perp pairs streamed live`);
     bits.push(g.status === "live" ? `global data: ${g.source}` : "global data: " + (g.status || "connecting…"));
     mount(subLine, bits.join(" · "));
     const regime = ov.regime || {};
@@ -773,8 +1131,9 @@ export function renderMarket(root) {
     mount(regimePill, h("span", { class: "dot " + dot }), label.charAt(0) + label.slice(1).toLowerCase());
   }
 
-  // ---- loaders ----
+  // ---- loaders (all pause while the tab is hidden — nothing burns idle) ----
   async function loadOverview() {
+    if (document.hidden) return;
     try {
       const res = await api.marketOverview();
       if (!res || res.ok === false) return;
@@ -783,12 +1142,14 @@ export function renderMarket(root) {
     } catch (e) {}
   }
   async function loadSparks() {
+    if (document.hidden) return;
     try {
       const res = await api.sparks();
       if (res && res.sparks) { sparks = res.sparks; paintMajors(); }
     } catch (e) {}
   }
   async function loadNews() {
+    if (document.hidden) return;
     try { news = await api.newsContext(); paintPulse(); } catch (e) {}
   }
 
@@ -796,8 +1157,11 @@ export function renderMarket(root) {
   loadNews();
   const t1 = setInterval(loadOverview, 5000);    // server TTLs protect providers; live prices tick
   const t2 = setInterval(loadSparks, 12000);
-  const t3 = setInterval(loadNews, 60000);
-  cleanups.push(() => { clearInterval(t1); clearInterval(t2); clearInterval(t3); });
+  const t3 = setInterval(loadNews, 25000);       // squawk wire refreshes server-side at 60s
+  const t4 = setInterval(() => {                 // "3m ago" stays honest between polls
+    for (const ref of timeRefs) ref.el.textContent = timeAgo(ref.iso);
+  }, 20000);
+  cleanups.push(() => { clearInterval(t1); clearInterval(t2); clearInterval(t3); clearInterval(t4); });
   cleanups.push(onLive(() => {})); // tape handles itself; cards update via overview poll
 
   return () => cleanups.forEach((c) => c());

@@ -5,7 +5,7 @@ import { buildHeader } from "./ui/header.js";
 import { openCommand, wireCommandHotkey } from "./ui/command.js";
 import { openDataSheet } from "./ui/drawer.js";
 import { buildHealthBadge } from "./ui/health.js";
-import { onRoute, currentRoute, startPolling, navigate } from "./lib/store.js";
+import { onRoute, currentRoute, startPolling, navigate, linkTo } from "./lib/store.js";
 import { getSettings, onSettings, applyMotion } from "./lib/settings.js";
 import { setDisplayCurrency } from "./lib/format.js";
 import { loadIconManifest } from "./lib/icons.js";
@@ -22,13 +22,46 @@ applyMotion();
 const app = document.getElementById("app");
 const view = h("main", { id: "view" });
 
+// Ordered, Coinbase-style footer: brand + tagline, then clean link columns,
+// then a quiet legal line. Structure = hairlines + whitespace, no boxes.
+const BRAND_MARK_SM = `<svg viewBox="0 0 32 32" width="26" height="26" style="border-radius:7px;display:block">
+  <rect width="32" height="32" rx="8" fill="#0b0e11"/>
+  <path d="M6 20.5h4.2l2.6-8.4 4.4 12.6 2.8-8.8 1.8 3h4.2" stroke="#f0b90b" stroke-width="2.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`;
+const fLink = (label, href) => h("a", { href, onClick: linkTo(href) }, label);
+const xLink = (label, href) => h("a", { href, target: "_blank", rel: "noopener noreferrer" }, label);
 const footer = h("footer", { class: "footer" },
   h("div", { class: "container" },
-    h("span", {}, "CG Signal Lab"),
-    h("span", {}, "Research only · public Binance spot & USD-M perp"),
-    h("a", { href: "#", class: "ghost-link", style: { marginLeft: "auto" },
-      onClick: (e) => { e.preventDefault(); openDataSheet(); } }, "Data health"),
-    h("a", { href: "/api/state", class: "ghost-link", target: "_blank", rel: "noopener" }, "API")));
+    h("div", { class: "ftr-grid" },
+      h("div", { class: "ftr-brand" },
+        h("div", { style: { display: "flex", alignItems: "center", gap: "9px" } },
+          h("span", { html: BRAND_MARK_SM }),
+          h("span", { class: "ftr-name" }, "CosmosGeek Radar")),
+        h("p", { class: "ftr-tag" },
+          "Public market-intelligence terminal: world indices, crypto, tokenized ",
+          "equities, spot/perp basis & funding and live multi-source news — ",
+          "keyless public data, never fabricated.")),
+      h("div", { class: "ftr-col" },
+        h("div", { class: "ftr-h" }, "Product"),
+        fLink("Market", "/"), fLink("Radar", "/radar"), fLink("Heatmap", "/heatmap"),
+        fLink("Funding", "/funding"), fLink("Movers", "/movers")),
+      h("div", { class: "ftr-col" },
+        h("div", { class: "ftr-h" }, "Data sources"),
+        xLink("Binance public API", "https://www.binance.com"),
+        xLink("CoinGecko", "https://www.coingecko.com"),
+        xLink("DefiLlama", "https://defillama.com"),
+        xLink("Alternative.me F&G", "https://alternative.me/crypto/fear-and-greed-index/"),
+        h("a", { href: "#", onClick: (e) => { e.preventDefault(); openDataSheet(); } }, "Data health →")),
+      h("div", { class: "ftr-col" },
+        h("div", { class: "ftr-h" }, "Developers"),
+        xLink("JSON API · /api/state", "/api/state"),
+        xLink("Health · /api/health", "/api/health"),
+        xLink("Sources · /api/sources", "/api/sources"))),
+    h("div", { class: "ftr-bottom" },
+      h("span", {}, "© 2026 CosmosGeek Radar"),
+      h("span", {}, "Research only — not investment advice"),
+      h("span", {}, "No accounts · no keys · no trading"),
+      h("span", { class: "num", style: { marginLeft: "auto" } }, "All times UTC"))));
 
 const header = buildHeader({ onSearch: openCommand });
 mount(app, header, view, footer);

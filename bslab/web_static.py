@@ -1,4 +1,4 @@
-"""HTML shell for the CG Signal Lab frontend.
+"""HTML shell for the CosmosGeek Radar frontend.
 
 The actual product lives in ``bslab/static/app/`` (ES-module JS + CSS) and is
 served straight from ``/static/app/`` by Starlette. This module only holds the
@@ -16,7 +16,7 @@ browsers/CDN drop the old cached bundle.
 """
 from __future__ import annotations
 
-ASSET_VERSION = "r16"
+ASSET_VERSION = "r20"
 
 INDEX_HTML = (
     r"""<!doctype html>
@@ -25,9 +25,9 @@ INDEX_HTML = (
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
-  <meta name="description" content="CG Signal Lab - public Binance spot/perp basis, funding and market radar. Research only.">
-  <title>CG Signal Lab</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0e11'/%3E%3Cpath d='M6 20.5h4.2l2.6-8.4 4.4 12.6 2.8-8.8 1.8 3h4.2' stroke='%23f0b90b' stroke-width='2.3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <meta name="description" content="CosmosGeek Radar - world markets, crypto basis/funding radar and a live news wire. Public data only, research only.">
+  <title>CosmosGeek Radar</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%230b0e11'/%3E%3Ccircle cx='16' cy='16' r='10.6' fill='none' stroke='%232b313a' stroke-width='1.1'/%3E%3Ccircle cx='16' cy='16' r='6.2' fill='none' stroke='%232b313a' stroke-width='1.1'/%3E%3Cline x1='16' y1='16' x2='24.4' y2='8.4' stroke='%23f0b90b' stroke-width='1.7' stroke-linecap='round'/%3E%3Ccircle cx='21.4' cy='20.2' r='1.8' fill='%23f0b90b'/%3E%3Ccircle cx='16' cy='16' r='1.5' fill='%23e9edf3'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/app/app.css?v=__CG_VER__">
   <script>
     (function () {
@@ -54,7 +54,9 @@ INDEX_HTML = (
       function push(msg) { if (msg && errs.length < 8) errs.push(String(msg)); }
       window.addEventListener("error", function (e) {
         if (e && e.message) push(e.message + (e.filename ? "  @ " + String(e.filename).split("/").pop() + ":" + e.lineno : ""));
-        else if (e && e.target && e.target.src) push("Failed to load: " + e.target.src);
+        /* IMG failures are normal (icon resolver walks a fallback chain);
+           only script/style load failures indicate a broken boot. */
+        else if (e && e.target && e.target.src && e.target.tagName !== "IMG") push("Failed to load: " + e.target.src);
       }, true);
       window.addEventListener("unhandledrejection", function (e) {
         push("Promise rejection: " + ((e.reason && (e.reason.message || e.reason)) || "unknown"));
@@ -67,7 +69,7 @@ INDEX_HTML = (
         box.id = "cg-boot-error";
         box.style.cssText = "max-width:680px;margin:70px auto;padding:28px 32px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1e2329;background:#fff;border:1px solid #e4e7ec;border-radius:16px;box-shadow:0 12px 40px -12px rgba(16,20,28,.26)";
         box.innerHTML =
-          '<div style="font-size:18px;font-weight:700;margin-bottom:6px">CG Signal Lab could not start</div>' +
+          '<div style="font-size:18px;font-weight:700;margin-bottom:6px">CosmosGeek Radar could not start</div>' +
           '<div style="color:#808a9d;font-size:13.5px;line-height:1.6">The page loaded but the app failed to boot. This is usually a stale cached script or a blocked module.</div>' +
           (errs.length
             ? '<pre style="margin:14px 0 0;padding:12px 14px;background:#f5f6f8;border-radius:10px;font-size:12px;line-height:1.5;white-space:pre-wrap;color:#b3261e">' + errs.map(esc).join("\n") + "</pre>"
@@ -84,7 +86,7 @@ INDEX_HTML = (
   <script type="module" src="/static/app/main.js?v=__CG_VER__"></script>
   <noscript>
     <div style="max-width:640px;margin:80px auto;padding:0 24px;font-family:system-ui;color:#1e2329">
-      <h1 style="font-size:20px">CG Signal Lab</h1>
+      <h1 style="font-size:20px">CosmosGeek Radar</h1>
       <p style="color:#707a8a">This market terminal needs JavaScript enabled. The public JSON API
       remains available at <code>/api/state</code>, <code>/api/radar</code> and related endpoints.</p>
     </div>

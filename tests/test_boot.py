@@ -61,7 +61,7 @@ def test_homepage_shell_is_bootable(tmp_path, monkeypatch):
     resp = client.get("/")
     html = resp.text
     assert resp.status_code == 200
-    assert "CG Signal Lab" in html                       # brand visible
+    assert "CosmosGeek Radar" in html                       # brand visible
     assert '"__CG_BOOTSTRAP_JSON__"' not in html         # snapshot injected
     assert '"__CG_ICONS__"' not in html.split("__CG_ICONS__ =")[-1][:24]
     assert "/static/app/main.js" in html                 # module entry present

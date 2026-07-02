@@ -3,7 +3,7 @@
 // window movers (spot, basis, funding). Every row opens the asset page.
 
 import { h, mount } from "../lib/dom.js";
-import { tokenIcon, onIconsReady } from "../lib/icons.js";
+import { tokenIcon, coinIcon, onIconsReady } from "../lib/icons.js";
 import { api } from "../lib/api.js";
 import { navigate } from "../lib/store.js";
 import { baseOf, fmtPct, fmtBps, fmtMoney, signClass } from "../lib/format.js";
@@ -61,13 +61,13 @@ export function renderMovers(root) {
   // ---- external 24h movers with mini charts ----
   function coinRow(c, valText, cls) {
     const row = h("div", { class: "lb-row", onClick: () => navigate("/symbol/" + (c.binance ? c.binance.symbol : c.base + "USDT")) },
-      tokenIcon(c.base, 24),
+      coinIcon(c, 24),
       h("span", { class: "lb-name" }, c.name),
       h("span", { class: "sparkbox", style: { width: "72px", height: "26px" },
         html: sparkline(c.spark || [], 72, 26, (c.chg7d || 0) < 0 ? "var(--down)" : "var(--up)") }),
       h("span", { class: "lb-val num " + cls }, valText));
     attachPopover(row, () => h("div", {},
-      h("div", { class: "hp-head" }, tokenIcon(c.base, 22), h("b", {}, c.name), h("span", { class: "muted" }, "#" + (c.rank ?? "—"))),
+      h("div", { class: "hp-head" }, coinIcon(c, 22), h("b", {}, c.name), h("span", { class: "muted" }, "#" + (c.rank ?? "—"))),
       popRow("24h", c.chg24h != null ? fmtPct(c.chg24h) : "—", signClass(c.chg24h)),
       popRow("Volume", fmtMoney(c.volume)),
       popRow("Market cap", fmtMoney(c.mcap)),

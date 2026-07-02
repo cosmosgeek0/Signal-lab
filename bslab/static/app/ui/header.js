@@ -9,17 +9,44 @@ import { getSettings, setSetting, onSettings } from "../lib/settings.js";
 import { openMenu } from "./menu.js";
 import { openSettingsSheet } from "./settings.js";
 
+// Radar-sweep mark: dark rounded square, concentric rings, gold sweep + ping.
 const BRAND_MARK = `<svg viewBox="0 0 32 32" width="32" height="32" class="brand-mark">
-  <rect width="32" height="32" rx="8" fill="#0b0e11"/>
-  <path d="M6 20.5h4.2l2.6-8.4 4.4 12.6 2.8-8.8 1.8 3h4.2" stroke="#f0b90b" stroke-width="2.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <defs><linearGradient id="cg-sweep" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#f0b90b" stop-opacity=".85"/>
+    <stop offset="1" stop-color="#f0b90b" stop-opacity="0"/>
+  </linearGradient></defs>
+  <rect width="32" height="32" rx="9" fill="#0b0e11"/>
+  <circle cx="16" cy="16" r="10.6" fill="none" stroke="#2b313a" stroke-width="1.1"/>
+  <circle cx="16" cy="16" r="6.2" fill="none" stroke="#2b313a" stroke-width="1.1"/>
+  <path d="M16 16 L16 4.8 A11.2 11.2 0 0 1 25.9 10.7 Z" fill="url(#cg-sweep)"/>
+  <line x1="16" y1="16" x2="24.4" y2="8.4" stroke="#f0b90b" stroke-width="1.7" stroke-linecap="round"/>
+  <circle cx="21.4" cy="20.2" r="1.8" fill="#f0b90b"/>
+  <circle cx="16" cy="16" r="1.5" fill="#e9edf3"/>
 </svg>`;
 
+// Every nav item exposes its real deep links on hover — no dead entries: the
+// Market anchors scroll to live sections, Heatmap links are documented params.
 const NAV_ITEMS = [
-  { route: "market", path: "/", label: "Market", ic: "globe" },
-  { route: "radar", path: "/radar", label: "Radar", ic: "radar" },
-  { route: "heatmap", path: "/heatmap", label: "Heatmap", ic: "grid" },
-  { route: "funding", path: "/funding", label: "Funding", ic: "zap" },
-  { route: "movers", path: "/movers", label: "Movers", ic: "trendingUp" },
+  { route: "market", path: "/", label: "Market", ic: "globe", menu: [
+    { label: "Overview", sub: "Global pulse, majors, intelligence", path: "/" },
+    { label: "World markets", sub: "US · Europe · Asia · India · commodities · FX", path: "/?sec=world" },
+    { label: "Crypto prices", sub: "Top-250 table, stocks tab, sortable", path: "/?sec=prices" },
+    { label: "Live news", sub: "Squawk wire + macro & crypto outlets", path: "/?sec=news" },
+  ] },
+  { route: "radar", path: "/radar", label: "Radar", ic: "radar", menu: [
+    { label: "Basis radar", sub: "Spot vs perp dislocations, live", path: "/radar" },
+  ] },
+  { route: "heatmap", path: "/heatmap", label: "Heatmap", ic: "grid", menu: [
+    { label: "Treemap · market cap", sub: "Size = cap, color = 24h move", path: "/heatmap?mode=treemap&metric=mcap" },
+    { label: "Tiles · basis", sub: "Spot–perp spread across the board", path: "/heatmap?mode=tiles&metric=basis" },
+    { label: "Bubbles · funding", sub: "Who pays whom, at a glance", path: "/heatmap?mode=bubbles&metric=funding" },
+  ] },
+  { route: "funding", path: "/funding", label: "Funding", ic: "zap", menu: [
+    { label: "Funding overview", sub: "Distribution, leaderboards, history", path: "/funding" },
+  ] },
+  { route: "movers", path: "/movers", label: "Movers", ic: "trendingUp", menu: [
+    { label: "Momentum boards", sub: "1/5/15/60-minute windows", path: "/movers" },
+  ] },
 ];
 
 const CURRENCIES = ["USD", "INR", "EUR", "GBP", "JPY"];
@@ -28,10 +55,15 @@ const pad = (x) => String(x).padStart(2, "0");
 
 export function buildHeader({ onSearch }) {
   const brand = h("a", { class: "brand", href: "/", onClick: linkTo("/"), html: BRAND_MARK });
-  brand.appendChild(h("span", { class: "brand-name", html: 'CG <b>Signal&nbsp;Lab</b>' }));
+  brand.appendChild(h("span", { class: "brand-name", html: 'CosmosGeek&nbsp;<b>Radar</b>' }));
 
   const nav = h("nav", { class: "nav" },
-    NAV_ITEMS.map((n) => h("a", { href: n.path, "data-route": n.route, onClick: linkTo(n.path) }, icon(n.ic), n.label)));
+    NAV_ITEMS.map((n) => h("span", { class: "nav-item" },
+      h("a", { href: n.path, "data-route": n.route, onClick: linkTo(n.path) }, icon(n.ic), n.label),
+      (n.menu || []).length ? h("span", { class: "nav-drop", role: "menu" },
+        n.menu.map((m) => h("a", { class: "nav-drop-it", href: m.path, onClick: linkTo(m.path) },
+          h("span", { class: "nd-label" }, m.label),
+          h("span", { class: "nd-sub" }, m.sub)))) : null)));
 
   const searchBtn = h("button", { class: "search-btn", onClick: onSearch, title: "Search (Cmd/Ctrl K)" },
     icon("search"), h("span", { class: "stxt" }, "Search"), h("span", { class: "kbd" }, cmdKey() + "K"));
