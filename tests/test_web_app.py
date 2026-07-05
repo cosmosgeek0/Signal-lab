@@ -10,6 +10,7 @@ import web_app
 def setup_function():
     web_app.CACHE.clear()
     web_app.LAST_GOOD.clear()
+    web_app._BINANCE_COVERAGE = None
     web_app.market_cache.reset()
 
 
@@ -155,6 +156,38 @@ def test_api_live_summary_debug_selftest_with_sample_sqlite(tmp_path, monkeypatc
     assert selftest["ok"] is True
 
 
+def test_api_binance_coverage_endpoint_uses_cached_public_counts(monkeypatch):
+    if importlib.util.find_spec("httpx") is None:
+        return
+    from starlette.testclient import TestClient
+
+    calls = {"count": 0}
+
+    async def fake_coverage():
+        calls["count"] += 1
+        return {
+            "ok": True,
+            "quote": "USDT",
+            "spot_count": 3,
+            "futures_count": 4,
+            "common_count": 2,
+            "symbols": ["BTCUSDT", "ETHUSDT"],
+        }
+
+    monkeypatch.setattr(web_app, "get_common_symbol_coverage", fake_coverage)
+    client = TestClient(web_app.app)
+
+    first = client.get("/api/binance-coverage").json()
+    second = client.get("/api/binance-coverage").json()
+
+    assert first["ok"] is True
+    assert first["source"] == "binance spot exchangeInfo + USD-M futures exchangeInfo"
+    assert first["common_count"] == 2
+    assert first["cache"]["hit"] is False
+    assert second["cache"]["hit"] is True
+    assert calls["count"] == 1
+
+
 def test_empty_collector_schema_db_does_not_crash(tmp_path, monkeypatch):
     db_path = tmp_path / "empty.sqlite"
     with sqlite3.connect(db_path) as conn:
@@ -237,6 +270,61 @@ def test_new_api_routes_return_json_with_sample_sqlite(tmp_path, monkeypatch):
         "build_enrichment",
         lambda symbols=None, limit=12: {"ok": True, "rows": [], "count": 0, "requested_symbols": symbols or []},
     )
+    monkeypatch.setattr(
+        web_app.sources,
+        "top_coins",
+        lambda limit=250: {
+            "source": "test coingecko",
+            "status": "live",
+            "coins": [
+                {
+                    "rank": 1,
+                    "base": "BTC",
+                    "name": "Bitcoin",
+                    "price": 101.0,
+                    "chg1h": 0.2,
+                    "chg24h": 2.5,
+                    "chg7d": 7.0,
+                    "chg30d": -4.0,
+                    "chg1y": 88.0,
+                    "mcap": 2_000_000_000_000,
+                    "volume": 50_000_000_000,
+                    "spark": [98, 99, 101],
+                }
+            ][:limit],
+        },
+    )
+    monkeypatch.setattr(
+        web_app.sources,
+        "stocks_overview",
+        lambda limit=50: {
+            "source": "test tokenized stocks",
+            "status": "live",
+            "items": [
+                {
+                    "rank": 1,
+                    "base": "AAPL",
+                    "symbol": "AAPL",
+                    "name": "Apple",
+                    "wrapper_symbol": "AAPLX",
+                    "price": 300.0,
+                    "chg1h": None,
+                    "chg24h": 1.2,
+                    "chg7d": 3.4,
+                    "chg30d": None,
+                    "chg1y": None,
+                    "mcap": 4_000_000_000_000,
+                    "volume": 900_000_000,
+                    "spark": [295, 298, 300],
+                }
+            ][:limit],
+        },
+    )
+    class StubRest:
+        def get_nowait(self):
+            return {"BTCUSDT": {"price": 102.0, "chg24h": 2.8, "qvol": 60_000_000_000}}
+
+    monkeypatch.setitem(web_app.sources.SOURCES, "binance_rest", StubRest())
     client = TestClient(web_app.app)
 
     for path in [
@@ -251,6 +339,8 @@ def test_new_api_routes_return_json_with_sample_sqlite(tmp_path, monkeypatch):
         "/api/movers?minutes=5",
         "/api/movers?minutes=15",
         "/api/heatmap",
+        "/api/bubbles?asset=crypto&window=24h&limit=25",
+        "/api/bubbles?asset=stocks&window=24h&limit=25",
         "/api/ticker",
         "/api/watchlist",
         "/api/enrichment?symbols=BTCUSDT&limit=1",

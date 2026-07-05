@@ -42,7 +42,7 @@ def find_chrome() -> str | None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Blank-page browser smoke check.")
     parser.add_argument("--base", default="http://127.0.0.1:8765")
-    parser.add_argument("--paths", default="/,/radar,/heatmap,/funding,/movers")
+    parser.add_argument("--paths", default="/,/radar,/heatmap,/bubbles,/funding,/movers")
     args = parser.parse_args()
 
     chrome = find_chrome()

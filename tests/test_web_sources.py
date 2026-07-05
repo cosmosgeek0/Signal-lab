@@ -27,6 +27,8 @@ CREATE TABLE basis_snapshots (
 
 def setup_function():
     web_cache.CACHE.reset()
+    # news_context memoizes its built payload (perf); tests must not share it
+    web_sources._NEWS_CTX_MEMO.clear()
     # isolate every test from real network + shared adapter state
     for src in web_sources.SOURCES.values():
         src.data = None
@@ -109,6 +111,16 @@ STOCKS_FIXTURE = [
 ]
 
 
+STOCK_FALLBACK_FIXTURE = [{
+    "id": "strategy-pp-variable-xstock", "symbol": "strcx", "name": "Strategy PP Variable xStock",
+    "image": "https://img.example/strcx.png", "market_cap_rank": 214,
+    "current_price": 92.0, "market_cap": 134_000_000.0, "total_volume": 1_000_000.0,
+    "price_change_percentage_24h_in_currency": 0.7,
+    "price_change_percentage_7d_in_currency": 2.2,
+    "sparkline_in_7d": {"price": [90.0 + i / 100 for i in range(168)]},
+}]
+
+
 def test_stocks_and_dex_composers(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     if client is None:
@@ -130,6 +142,21 @@ def test_stocks_and_dex_composers(tmp_path, monkeypatch):
     # clicking a stock opens a real asset page: ticker resolves to the wrapper id
     coin = web_sources.coin_by_base("TSLA")
     assert coin and coin.get("kind") == "stock" and coin["id"] == "tesla-xstock"
+
+
+def test_stocks_fallback_from_top_coins_when_category_limited(monkeypatch):
+    kill_all_fetchers(monkeypatch)
+    monkeypatch.setattr(web_sources.SOURCES["coingecko"], "fetcher", lambda: STOCK_FALLBACK_FIXTURE)
+    web_sources.SOURCES["coingecko"].get()
+
+    payload = web_sources.stocks_overview(limit=4)
+
+    assert payload["items"]
+    row = payload["items"][0]
+    assert row["base"] == "STRC" and row["wrapper_symbol"] == "STRCX"
+    assert row["price"] == 92.0 and "fallback" in payload["source"]
+    coin = web_sources.coin_by_base("STRC")
+    assert coin and coin.get("kind") == "stock" and coin["id"] == "strategy-pp-variable-xstock"
 
 
 def test_market_overview_merges_binance_basis_into_coins(tmp_path, monkeypatch):
@@ -175,7 +202,23 @@ def test_fx_and_news_and_manifest_offline_safe(tmp_path, monkeypatch):
     news = client.get("/api/news-context").json()
     assert news["ok"] is True and news["items"] == [] and news["options"]
     man = client.get("/api/icon-manifest").json()
-    assert man["ok"] is True and isinstance(man["local"], list) and man["remote"] == {}
+    assert man["ok"] is True and isinstance(man["local"], list) and isinstance(man["remote"], dict)
+    assert "coverage" in man and "pending_search" in man["coverage"]
+
+
+def test_icon_manifest_uses_coingecko_images(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    if client is None:
+        return
+    kill_all_fetchers(monkeypatch)
+    monkeypatch.setattr(web_sources.SOURCES["coingecko"], "fetcher", lambda: CG_FIXTURE)
+    web_sources.SOURCES["coingecko"].get()
+
+    man = client.get("/api/icon-manifest").json()
+
+    assert man["ok"] is True
+    assert man["remote"]["BTC"] == "https://img.example/btc.png"
+    assert man["coverage"]["resolved"] >= 1
 
 
 def test_fx_with_fixture(tmp_path, monkeypatch):
@@ -368,4 +411,36 @@ def test_news_context_lanes_squawk_macro_crypto(monkeypatch):
     squawk = next(it for it in payload["items"] if it["lane"] == "squawk")
     assert "BTC" in squawk["matched_symbols"]
     assert squawk["impact"] >= 80
-    assert any(c["id"] == "tree_news" for c in payload["coverage"])
+    tree_coverage = next(c for c in payload["coverage"] if c["id"] == "tree_news")
+    assert tree_coverage["status"] == "delayed"
+    assert "delayed" in tree_coverage["label"].lower()
+    provider_ids = {p["id"] for p in payload["providers"]}
+    assert {"tree", "financialjuice", "wsjmarkets", "benzinga", "deitaone",
+            "faststocknewss", "stockmktnewz", "degen_news"}.issubset(provider_ids)
+    tree_provider = next(p for p in payload["providers"] if p["id"] == "tree")
+    assert tree_provider["status"] == "delayed"
+    assert "history" in tree_provider["route"].lower()
+    assert "websocket" in tree_provider["note"].lower()
+    assert next(p for p in payload["providers"] if p["id"] == "deitaone")["status"] == "tree_backed"
+    assert next(p for p in payload["providers"] if p["id"] == "faststocknewss")["status"] == "requires_key"
+    tree_source = next(s for s in web_sources.statuses() if s["id"] == "tree_news")
+    assert tree_source["status"] == "delayed"
+
+
+def test_news_context_tree_only_is_delayed_not_live(monkeypatch):
+    kill_all_fetchers(monkeypatch)
+    now = time.time()
+    iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 60))
+    tree = web_sources.SOURCES["tree_news"]
+    tree.data = [{
+        "title": "WatcherGuru reports Bitcoin ETF inflows accelerate",
+        "url": "https://news.treeofalpha.com",
+        "domain": "@WatcherGuru",
+        "time": iso,
+        "lane": "squawk",
+        "symbols_hint": ["BTC"],
+    }]
+    tree.fetched_mono = time.monotonic(); tree.last_ok_ts = now
+    payload = web_sources.news_context(limit=4)
+    assert payload["status"] == "delayed"
+    assert payload["source"] == "tree"

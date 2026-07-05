@@ -16,7 +16,7 @@ browsers/CDN drop the old cached bundle.
 """
 from __future__ import annotations
 
-ASSET_VERSION = "r20"
+ASSET_VERSION = "r269"
 
 INDEX_HTML = (
     r"""<!doctype html>
@@ -32,7 +32,11 @@ INDEX_HTML = (
   <script>
     (function () {
       try {
-        var t = localStorage.getItem('cg-theme');
+        var saved = JSON.parse(localStorage.getItem('cg-settings') || '{}');
+        var mode = saved && saved.themeMode;
+        var t = mode === 'system'
+          ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+          : (mode === 'dark' || mode === 'light' ? mode : localStorage.getItem('cg-theme'));
         if (t === 'dark' || t === 'light') document.documentElement.setAttribute('data-theme', t);
       } catch (e) {}
     })();

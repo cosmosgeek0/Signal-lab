@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from contextlib import asynccontextmanager
 from typing import Any, Callable
 
@@ -17,6 +18,9 @@ from starlette.staticfiles import StaticFiles
 
 from bslab import web_queries as queries
 from bslab import web_sources as sources
+from bslab.derivatives import DERIVATIVES as derivatives_stream
+from bslab.derivatives import build_derivatives_payload
+from bslab.symbols import get_common_symbol_coverage
 from bslab.web_cache import CACHE as market_cache
 from bslab.web_static import INDEX_HTML
 
@@ -29,6 +33,13 @@ except OSError:
 ICONS_TOKEN = '"__CG_ICONS__"'
 
 WINDOW_MINUTES = {"5m": 5, "15m": 15, "1h": 60, "4h": 240, "24h": 1440, "7d": 10080, "all": 0}
+BUBBLE_WINDOWS = {
+    "1h": ("chg1h", "1 hour"),
+    "24h": ("chg24h", "1 day"),
+    "7d": ("chg7d", "1 week"),
+    "30d": ("chg30d", "1 month"),
+    "1y": ("chg1y", "1 year"),
+}
 
 
 DB_PATH = queries.DB_PATH
@@ -43,6 +54,8 @@ LAST_GOOD = queries.LAST_GOOD
 JsonDict = dict[str, Any]
 
 BOOTSTRAP_TOKEN = '"__CG_BOOTSTRAP_JSON__"'
+BINANCE_COVERAGE_TTL = 600.0
+_BINANCE_COVERAGE: tuple[float, JsonDict] | None = None
 
 
 def sync_config() -> None:
@@ -66,6 +79,17 @@ def split_symbols(raw: str | None) -> list[str]:
         if symbol:
             out.append(symbol)
     return out
+
+
+QUOTE_SUFFIXES = ("USDT", "USDC", "FDUSD", "TUSD", "BUSD", "USD", "BTC", "ETH")
+
+
+def base_from_symbol(symbol: str | None) -> str:
+    clean = "".join(ch for ch in str(symbol or "").upper() if ch.isalnum())
+    for quote in QUOTE_SUFFIXES:
+        if clean.endswith(quote) and len(clean) > len(quote):
+            return clean[:-len(quote)]
+    return clean
 
 
 def safe_payload(kind: str, builder: Callable[[], JsonDict]) -> JsonDict:
@@ -333,6 +357,204 @@ async def api_market_overview(_: Request) -> JSONResponse:
     return JSONResponse(await run_in_threadpool(build_market_overview))
 
 
+def _num(value: Any) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    if out != out or out in (float("inf"), float("-inf")):
+        return None
+    return out
+
+
+def _spark_prices(points: Any) -> list[float]:
+    out: list[float] = []
+    if not isinstance(points, list):
+        return out
+    for point in points:
+        value = None
+        if isinstance(point, (list, tuple)) and len(point) >= 2:
+            value = point[1]
+        elif isinstance(point, (int, float)):
+            value = point
+        n = _num(value)
+        if n is not None and n > 0:
+            out.append(n)
+    return out
+
+
+def _pct_from_prices(prices: list[float]) -> float | None:
+    if len(prices) < 2 or prices[0] <= 0:
+        return None
+    return ((prices[-1] - prices[0]) / prices[0]) * 100.0
+
+
+def _local_crypto_bubble_rows(limit: int, rest: JsonDict) -> tuple[list[JsonDict], str, str, str]:
+    """Fallback bubble rows from the live exchange cache.
+
+    This is deliberately narrow: it keeps the Bubbles page alive when
+    CoinGecko/CoinPaprika are rate-limited, but does not invent unavailable
+    long-window values or pretend Binance is a global market source.
+    """
+    snapshot = market_cache.state()
+    sparks = market_cache.sparks().get("sparks") or {}
+    live = list(snapshot.get("live") or [])
+    rows: list[JsonDict] = []
+    for idx, row in enumerate(live[:limit], start=1):
+        symbol = str(row.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        base = base_from_symbol(symbol)
+        tick = rest.get(base + "USDT") if isinstance(rest, dict) else None
+        prices = _spark_prices(sparks.get(symbol) or [])
+        price = _num((tick or {}).get("price")) or _num(row.get("spot_mid")) or _num(row.get("mark_price"))
+        rows.append({
+            "rank": idx,
+            "base": base,
+            "symbol": symbol,
+            "name": base,
+            "image": None,
+            "price": price,
+            "chg1h": _pct_from_prices(prices),
+            "chg24h": _num((tick or {}).get("chg24h")),
+            "chg7d": None,
+            "chg30d": None,
+            "chg1y": None,
+            "spark": prices,
+            "mcap": None,
+            "volume": _num((tick or {}).get("qvol")),
+        })
+    health = snapshot.get("health") or {}
+    source = "local exchange cache"
+    if rest:
+        source += " + Binance public REST"
+    status = "live" if health.get("status") == "LIVE" else str(health.get("status") or "stale").lower()
+    note = (
+        "CoinGecko is unavailable, so crypto bubbles are using the app's local exchange cache; "
+        "1H comes from local spark history and 24H from Binance public REST where listed. "
+        "Longer windows are left unavailable instead of being fabricated."
+    )
+    return rows, source, status, note
+
+
+def build_bubbles(asset: str = "crypto", window: str = "24h", limit: int = 100) -> JsonDict:
+    """Animated bubble payload. The endpoint returns only source-backed rows:
+    no synthetic stock prices, no fabricated timeframes. Unsupported windows
+    come back with null changes and an honest `supported=false` marker."""
+    asset = (asset or "crypto").strip().lower()
+    if asset not in {"crypto", "stocks"}:
+        asset = "crypto"
+    if window not in BUBBLE_WINDOWS:
+        window = "24h"
+    field, label = BUBBLE_WINDOWS[window]
+    limit = max(20, min(250 if asset == "crypto" else 100, int(limit or 100)))
+
+    try:
+        rest = sources.SOURCES["binance_rest"].get_nowait() or {}
+    except Exception:  # noqa: BLE001 - optional speed layer only
+        rest = {}
+
+    if asset == "crypto":
+        try:
+            pack = sources.top_coins(250, wait=True)
+        except TypeError:
+            # Some tests monkeypatch top_coins with the legacy signature.
+            pack = sources.top_coins(250)
+        raw_rows = list((pack.get("coins") or [])[:limit])
+        source = pack.get("source") or "coingecko"
+        status = pack.get("status") or "unknown"
+        label_name = "Crypto"
+        source_note = (
+            "Ranked CoinGecko market universe with Binance public spot overlay where listed; "
+            "missing windows stay unavailable instead of being filled."
+        )
+        if not raw_rows:
+            raw_rows, source, status, source_note = _local_crypto_bubble_rows(limit, rest)
+    else:
+        pack = sources.stock_bubbles_overview(window=window, limit=min(limit, 100))
+        raw_rows = list(pack.get("items") or [])
+        source = pack.get("source") or "yahoo finance chart"
+        status = pack.get("status") or "unknown"
+        label_name = "Stocks"
+        source_note = pack.get("note") or (
+            "Cash-equity bubbles use Yahoo chart history when available, with "
+            "Nasdaq public screener as a 1D fallback. Unsupported windows stay "
+            "unavailable instead of being substituted."
+        )
+
+    rows = []
+    for idx, item in enumerate(raw_rows, start=1):
+        base = str(item.get("base") or item.get("symbol") or "").upper()
+        if not base:
+            continue
+        tick = rest.get(base + "USDT") if asset == "crypto" else None
+        price = _num((tick or {}).get("price")) or _num(item.get("price_live")) or _num(item.get("price"))
+        change = _num(item.get(field))
+        if tick and field == "chg24h":
+            change = _num(tick.get("chg24h"))
+        volume = _num((tick or {}).get("qvol")) or _num(item.get("vol_live")) or _num(item.get("volume"))
+        mcap = _num(item.get("mcap"))
+        rows.append({
+            "rank": item.get("rank") or idx,
+            "base": base,
+            "symbol": base + ("USDT" if asset == "crypto" else ""),
+            "name": item.get("name") or base,
+            "wrapper_symbol": item.get("wrapper_symbol"),
+            "wrapper": item.get("wrapper"),
+            "asset": asset,
+            "image": item.get("image"),
+            "price": price,
+            "change": change,
+            "change_field": field,
+            "mcap": mcap,
+            "volume": volume,
+            "spark": item.get("spark") or [],
+            "source": source,
+            "supported": change is not None,
+            "href": (
+                f"/symbol/{base}USDT" if asset == "crypto"
+                else item.get("href") or f"/symbol/{(item.get('wrapper_symbol') or base)}USDT"
+            ),
+            "external": bool(item.get("external")) if asset == "stocks" else False,
+        })
+
+    rows.sort(
+        key=lambda r: (
+            r["change"] is not None,
+            abs(r["change"] or 0.0),
+            r["volume"] or r["mcap"] or 0.0,
+        ),
+        reverse=True,
+    )
+    rows = rows[:limit]
+    supported = sum(1 for r in rows if r.get("supported"))
+    return {
+        "ok": True,
+        "asset": asset,
+        "label": label_name,
+        "window": window,
+        "window_label": label,
+        "limit": limit,
+        "count": len(rows),
+        "supported_count": supported,
+        "supported": supported > 0,
+        "status": status,
+        "source": source,
+        "source_note": source_note,
+        "rows": rows,
+        "updated_at": int(time.time()),
+    }
+
+
+async def api_bubbles(request: Request) -> JSONResponse:
+    asset = request.query_params.get("asset", "crypto")
+    window = request.query_params.get("window", "24h").strip().lower()
+    limit = int_param(request, "limit", 100, 20, 250)
+    return JSONResponse(await run_in_threadpool(build_bubbles, asset, window, limit))
+
+
 def build_coin_profile(symbol: str) -> JsonDict:
     """Rich symbol profile: external coin data (CoinGecko/Paprika caches) +
     the live Binance row. Composed from caches only — no per-request fetch."""
@@ -366,15 +588,24 @@ async def api_coin_profile(request: Request) -> JSONResponse:
     return JSONResponse(await run_in_threadpool(build_coin_profile, symbol))
 
 
-async def api_news_context(_: Request) -> JSONResponse:
-    return JSONResponse(await run_in_threadpool(lambda: {"ok": True, **sources.news_context()}))
+async def api_news_context(request: Request) -> JSONResponse:
+    try:
+        limit = max(8, min(80, int(request.query_params.get("limit", "42"))))
+    except ValueError:
+        limit = 42
+    return JSONResponse(await run_in_threadpool(lambda: {"ok": True, **sources.news_context(limit=limit)}))
 
 
 async def api_coin_history(request: Request) -> JSONResponse:
-    """Real price/volume/mcap history for any coin (CoinGecko market_chart,
-    cached + bounded). Powers the asset-page Price/Volume/Market-cap charts."""
+    """Real price/volume/mcap history for a symbol.
+
+    Binance-listed crypto uses exchange-native spot candles first. CoinGecko is
+    still useful for market-cap series and non-Binance assets, but it must not
+    be the single point of failure for BTC/ETH/SOL-style asset pages.
+    """
     base = "".join(ch for ch in request.path_params.get("base", "").upper() if ch.isalnum())
     days = request.query_params.get("days", "1")
+    requested_symbol = "".join(ch for ch in request.query_params.get("symbol", "").upper() if ch.isalnum())
 
     def build() -> JsonDict:
         clean = base
@@ -382,15 +613,43 @@ async def api_coin_history(request: Request) -> JSONResponse:
             if clean.endswith(quote) and len(clean) > len(quote):
                 clean = clean[: -len(quote)]
                 break
+        exchange_symbol = requested_symbol or clean + "USDT"
+        exchange_chart = sources.binance_spot_chart(exchange_symbol, days)
         coin = None
         try:
             coin = sources.coin_by_base(clean)
         except Exception:  # noqa: BLE001
             coin = None
+        market_chart = None
+        if coin and coin.get("id"):
+            try:
+                market_chart = sources.coin_chart(coin["id"], days)
+            except Exception:  # noqa: BLE001
+                market_chart = None
+        if exchange_chart:
+            # Binance price/volume is the primary chart. If CoinGecko is alive,
+            # attach only market-cap history; never let its rate limit break
+            # the main asset chart.
+            return {
+                "ok": True,
+                "status": "live",
+                "source": exchange_chart.get("source") or "binance_spot",
+                "provider": exchange_chart.get("provider") or "Binance spot",
+                "base": clean,
+                "id": coin.get("id") if coin else None,
+                "days": days,
+                "prices": exchange_chart.get("prices") or [],
+                "volumes": exchange_chart.get("volumes") or [],
+                "mcaps": (market_chart or {}).get("mcaps") or [],
+                "ohlc": exchange_chart.get("ohlc") or [],
+                "interval": exchange_chart.get("interval"),
+                "raw_points": exchange_chart.get("raw_points"),
+                "secondary_source": "coingecko" if market_chart else None,
+            }
         if not coin or not coin.get("id"):
             return {"ok": True, "status": "unavailable", "base": clean,
                     "error": "no external profile for this asset", "prices": [], "volumes": [], "mcaps": []}
-        chart = sources.coin_chart(coin["id"], days)
+        chart = market_chart
         if not chart:
             return {"ok": True, "status": "unavailable", "base": clean,
                     "error": "history source unreachable", "prices": [], "volumes": [], "mcaps": []}
@@ -404,9 +663,70 @@ async def api_fx(_: Request) -> JSONResponse:
 
 
 async def api_icon_manifest(_: Request) -> JSONResponse:
-    # Local-only: the browser resolves bundled CC0 SVGs or deterministic
-    # monograms and never loads third-party token images.
-    return JSONResponse({"ok": True, "local": ICON_BASES, "remote": {}})
+    # Real-logo manifest: bundled SVGs first, then server-resolved CoinGecko
+    # image URLs and cached /search lookups. CoinMarketCap logo metadata is a
+    # keyed API, so do not pretend to use it without a configured server key.
+    def build() -> JsonDict:
+        remote: dict[str, str] = {}
+        bases: set[str] = set()
+
+        def remember(base: str | None, url: str | None = None) -> None:
+            b = base_from_symbol(base)
+            if not b:
+                return
+            bases.add(b)
+            if url and isinstance(url, str) and url.startswith("http"):
+                remote[b] = url
+
+        try:
+            for coin in (sources.top_coins(250).get("coins") or []):
+                remember(coin.get("base"), coin.get("image"))
+        except Exception:
+            pass
+        try:
+            for coin in (sources.trending().get("coins") or []):
+                remember(coin.get("base") or coin.get("symbol"), coin.get("image"))
+        except Exception:
+            pass
+        try:
+            for stock in (sources.stocks_overview(limit=80).get("items") or []):
+                remember(stock.get("base"), stock.get("image"))
+        except Exception:
+            pass
+        try:
+            state = market_cache.state()
+            for row in state.get("live") or []:
+                remember(row.get("symbol") if isinstance(row, dict) else getattr(row, "symbol", ""))
+        except Exception:
+            pass
+        try:
+            overview = market_cache.overview()
+            for bucket in (overview.get("movers") or {}).values():
+                for row in bucket or []:
+                    remember(row.get("symbol") if isinstance(row, dict) else getattr(row, "symbol", ""))
+        except Exception:
+            pass
+
+        unresolved = sorted(b for b in bases if b not in remote and b not in ICON_BASES)
+        if unresolved:
+            try:
+                remote.update(sources.extra_icons(unresolved[:140]))
+            except Exception:
+                pass
+        return {
+            "ok": True,
+            "local": ICON_BASES,
+            "remote": remote,
+            "remote_count": len(remote),
+            "coverage": {
+                "tracked_bases": len(bases),
+                "bundled": len(ICON_BASES),
+                "resolved": len(remote),
+                "pending_search": len([b for b in unresolved if b not in remote]),
+            },
+        }
+
+    return JSONResponse(await run_in_threadpool(build))
 
 
 async def api_sources(_: Request) -> JSONResponse:
@@ -425,11 +745,11 @@ async def api_detail(request: Request) -> JSONResponse:
 
 
 async def api_health(_: Request) -> JSONResponse:
-    return JSONResponse(await run_in_threadpool(market_cache.health))
+    return Response(market_cache.health_json(), media_type="application/json")
 
 
 async def api_summary(_: Request) -> JSONResponse:
-    return JSONResponse(await run_in_threadpool(market_cache.summary))
+    return Response(market_cache.summary_json(), media_type="application/json")
 
 
 async def api_live(request: Request) -> JSONResponse:
@@ -439,6 +759,37 @@ async def api_live(request: Request) -> JSONResponse:
 
 async def api_symbols(_: Request) -> JSONResponse:
     return JSONResponse(await run_in_threadpool(market_cache.symbols))
+
+
+async def api_binance_coverage(_: Request) -> JSONResponse:
+    global _BINANCE_COVERAGE
+    now = time.monotonic()
+    if _BINANCE_COVERAGE and now - _BINANCE_COVERAGE[0] <= BINANCE_COVERAGE_TTL:
+        payload = dict(_BINANCE_COVERAGE[1])
+        payload["cache"] = {"hit": True, "age_seconds": round(now - _BINANCE_COVERAGE[0], 3)}
+        return JSONResponse(payload)
+    try:
+        payload = await get_common_symbol_coverage()
+        payload["source"] = "binance spot exchangeInfo + USD-M futures exchangeInfo"
+        payload["cache"] = {"hit": False, "age_seconds": 0.0, "ttl_seconds": BINANCE_COVERAGE_TTL}
+    except Exception as exc:  # noqa: BLE001 - dashboard must stay usable if Binance blocks/rate-limits
+        previous = dict(_BINANCE_COVERAGE[1]) if _BINANCE_COVERAGE else {}
+        payload = {
+            **previous,
+            "ok": False,
+            "source": "binance spot exchangeInfo + USD-M futures exchangeInfo",
+            "error": f"{type(exc).__name__}: {exc}",
+            "cache": {
+                "hit": bool(previous),
+                "stale": bool(previous),
+                "age_seconds": round(now - _BINANCE_COVERAGE[0], 3) if _BINANCE_COVERAGE else None,
+            },
+        }
+        if not previous:
+            payload.update({"spot_count": None, "futures_count": None, "common_count": None, "symbols": []})
+    if payload.get("ok"):
+        _BINANCE_COVERAGE = (now, payload)
+    return JSONResponse(payload)
 
 
 async def api_history(request: Request) -> JSONResponse:
@@ -467,6 +818,25 @@ async def api_heatmap(request: Request) -> JSONResponse:
     if mode not in {"basis", "funding"}:
         mode = "basis"
     return JSONResponse(await run_in_threadpool(market_cache.heatmap, mode, limit))
+
+
+async def api_derivatives(request: Request) -> JSONResponse:
+    limit = int_param(request, "limit", 120, 20, 240)
+    window = request.query_params.get("window", "4h").strip().lower()
+    if window not in {"1h", "4h", "12h", "24h", "7d", "30d"}:
+        window = "4h"
+    snapshot = market_cache.state()
+    stream = derivatives_stream.snapshot()
+    return JSONResponse(
+        await run_in_threadpool(
+            build_derivatives_payload,
+            snapshot.get("live", []),
+            snapshot.get("health", {}),
+            stream,
+            limit,
+            window,
+        )
+    )
 
 
 async def api_ticker(_: Request) -> JSONResponse:
@@ -508,8 +878,10 @@ async def api_perf(_: Request) -> JSONResponse:
 routes = [
     Route("/", homepage),
     Route("/symbol/{symbol}", homepage),
+    Route("/world", homepage),
     Route("/radar", homepage),
     Route("/heatmap", homepage),
+    Route("/bubbles", homepage),
     Route("/funding", homepage),
     Route("/movers", homepage),
     Route("/api/state", api_state),
@@ -532,11 +904,14 @@ routes = [
     Route("/api/summary", api_summary),
     Route("/api/live", api_live),
     Route("/api/symbols", api_symbols),
+    Route("/api/binance-coverage", api_binance_coverage),
     Route("/api/history", api_history),
     Route("/api/opportunities", api_opportunities),
     Route("/api/funding", api_funding),
     Route("/api/movers", api_movers),
     Route("/api/heatmap", api_heatmap),
+    Route("/api/bubbles", api_bubbles),
+    Route("/api/derivatives", api_derivatives),
     Route("/api/ticker", api_ticker),
     Route("/api/watchlist", api_watchlist),
     Route("/api/enrichment", api_enrichment),
@@ -553,10 +928,12 @@ routes = [
 async def lifespan(_: Starlette):
     sync_config()
     await market_cache.start()
+    await derivatives_stream.start()
     sources.warm_sources()  # background daemon; never blocks startup
     try:
         yield
     finally:
+        await derivatives_stream.stop()
         await market_cache.stop()
 
 

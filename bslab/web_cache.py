@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import sqlite3
 import threading
 import time
@@ -81,6 +82,9 @@ class MarketCache:
         self._state_json: str = ""
         self._lite: Optional[JsonDict] = None
         self._lite_json: str = ""
+        self._health_json: str = ""
+        self._summary: Optional[JsonDict] = None
+        self._summary_json: str = ""
         self._sizes: dict[str, int] = {}
         self._movers: dict[int, JsonDict] = {}
         self._sparks: dict[str, list] = {}
@@ -331,7 +335,9 @@ class MarketCache:
             "radar_top": live[:50],
             "symbol_count": len(live),
         }
+        summary = {**snapshot.get("summary", {}), **q.opportunities_from_rows(live)}
         self._lite = lite
+        self._summary = summary
         try:
             self._state_json = json.dumps(snapshot, default=str)
         except (TypeError, ValueError):
@@ -340,6 +346,14 @@ class MarketCache:
             self._lite_json = json.dumps(lite, default=str)
         except (TypeError, ValueError):
             self._lite_json = ""
+        try:
+            self._health_json = json.dumps(snapshot.get("health", {}), default=str)
+        except (TypeError, ValueError):
+            self._health_json = "{}"
+        try:
+            self._summary_json = json.dumps(summary, default=str)
+        except (TypeError, ValueError):
+            self._summary_json = "{}"
         self._sizes = {
             "state_bytes": len(self._state_json),
             "state_lite_bytes": len(self._lite_json),
@@ -429,10 +443,31 @@ class MarketCache:
             "failed_refresh_count": self.failed_refresh_count,
             "db_path": self._db_path or q.current_db_path(),
             "db_abs_path": str(q.db_abs_path(self._db_path)),
+            "storage": self.storage_metrics(),
+        }
+
+    def storage_metrics(self) -> JsonDict:
+        db_path = q.db_abs_path(self._db_path)
+        db_bytes = db_path.stat().st_size if db_path.exists() else 0
+        usage_root = db_path.parent if db_path.parent.exists() else db_path.parent.parent
+        usage = shutil.disk_usage(usage_root)
+        return {
+            "db_bytes": db_bytes,
+            "disk_total_bytes": usage.total,
+            "disk_used_bytes": usage.used,
+            "disk_free_bytes": usage.free,
+            "other_used_bytes": max(0, usage.used - db_bytes),
         }
 
     # ---- accessors (memory only) -----------------------------------------
     def _ensure(self) -> JsonDict:
+        # HTTP handlers must stay memory-only once the cache has been primed.
+        # If the background collector is slow or an upstream call stalls, a
+        # request should serve the last honest snapshot and expose age in
+        # health instead of blocking every visible tab on a synchronous refresh.
+        snapshot = self._snapshot
+        if snapshot is not None and self._db_path == q.current_db_path():
+            return snapshot
         return self.refresh_if_stale()
 
     def state(self) -> JsonDict:
@@ -466,9 +501,27 @@ class MarketCache:
     def health(self) -> JsonDict:
         return dict(self._ensure().get("health", {}))
 
+    def health_cached(self) -> JsonDict:
+        snapshot = self._snapshot
+        if snapshot is not None:
+            return dict(snapshot.get("health", {}))
+        return self.health()
+
+    def health_json(self) -> str:
+        snapshot = self._snapshot
+        if snapshot is not None and self._health_json:
+            return self._health_json
+        return json.dumps(self.health(), default=str)
+
     def summary(self) -> JsonDict:
         snap = self._ensure()
-        return {**snap.get("summary", {}), **q.opportunities_from_rows(snap.get("live", []))}
+        return dict(self._summary or {**snap.get("summary", {}), **q.opportunities_from_rows(snap.get("live", []))})
+
+    def summary_json(self) -> str:
+        snapshot = self._snapshot
+        if snapshot is not None and self._summary_json:
+            return self._summary_json
+        return json.dumps(self.summary(), default=str)
 
     def live(self, limit: int = 300) -> JsonDict:
         snap = self._ensure()

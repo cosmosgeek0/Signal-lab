@@ -40,6 +40,21 @@ export const UI = {
   wifi: I('<path d="M12 20h.01"/><path d="M2 8.82a15 15 0 0 1 20 0"/><path d="M5 12.859a10 10 0 0 1 14 0"/><path d="M8.5 16.429a5 5 0 0 1 7 0"/>'),
   refresh: I('<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>'),
   warning: I('<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>'),
+  radio: I('<path d="M4.9 19.1a10 10 0 0 1 14.2 0"/><path d="M7.8 16.2a6 6 0 0 1 8.4 0"/><circle cx="12" cy="12" r="2"/><path d="M12 2v4"/><path d="m4.93 4.93 2.83 2.83"/><path d="M19.07 4.93 16.24 7.76"/>'),
+  shield: I('<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/>'),
+  server: I('<rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01"/><path d="M6 18h.01"/>'),
+  cloud: I('<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>'),
+  layers: I('<path d="m12.83 2.18 8.18 4.61a1 1 0 0 1 0 1.74l-8.18 4.61a1.7 1.7 0 0 1-1.66 0L2.99 8.53a1 1 0 0 1 0-1.74l8.18-4.61a1.7 1.7 0 0 1 1.66 0Z"/><path d="m22 12.5-9.17 5.17a1.7 1.7 0 0 1-1.66 0L2 12.5"/><path d="m22 17.5-9.17 5.17a1.7 1.7 0 0 1-1.66 0L2 17.5"/>'),
+  newspaper: I('<path d="M15 18h-5"/><path d="M18 14h-8"/><path d="M18 10h-8"/><path d="M4 22h16a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H8l-6 6v10a2 2 0 0 0 2 2Z"/><path d="M8 4v6H2"/>'),
+  lock: I('<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>'),
+  flask: I('<path d="M9 3h6"/><path d="M10 3v6.2L4.6 18.6A2 2 0 0 0 6.34 22h11.32a2 2 0 0 0 1.74-3.4L14 9.2V3"/><path d="M7.3 16h9.4"/>'),
+  barChart: I('<path d="M3 3v18h18"/><path d="M7 16V9"/><path d="M12 16V5"/><path d="M17 16v-3"/>'),
+  cpu: I('<rect width="14" height="14" x="5" y="5" rx="2"/><path d="M9 9h6v6H9z"/><path d="M9 1v3"/><path d="M15 1v3"/><path d="M9 20v3"/><path d="M15 20v3"/><path d="M20 9h3"/><path d="M20 14h3"/><path d="M1 9h3"/><path d="M1 14h3"/>'),
+  code: I('<path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/><path d="m14.5 4-5 16"/>'),
+  bluetooth: I('<path d="m7 7 10 10-5 5V2l5 5L7 17"/>'),
+  battery: I('<rect width="16" height="10" x="2" y="7" rx="2"/><path d="M22 11v2"/><path d="M6 11h8"/>'),
+  volumeX: I('<path d="M11 5 6 9H2v6h4l5 4z"/><path d="m22 9-6 6"/><path d="m16 9 6 6"/>'),
+  bell: I('<path d="M10.27 21a2 2 0 0 0 3.46 0"/><path d="M18 8a6 6 0 0 0-12 0c0 7-3 8-3 8h18s-3-1-3-8"/>'),
 };
 
 export function icon(name, cls) {
@@ -83,7 +98,7 @@ export function monogram(base, px) {
     <circle cx="20" cy="20" r="20" fill="url(#${gid})"/>
     <text x="20" y="20.5" text-anchor="middle" dominant-baseline="central"
       font-family="var(--font)" font-weight="700" font-size="${fs}"
-      letter-spacing="-.3" fill="#fff">${text}</text>
+      letter-spacing="0" fill="#fff">${text}</text>
   </svg>`;
   const span = document.createElement("span");
   span.className = "tok-mono";
@@ -145,9 +160,25 @@ const SPOTHQ = (base) =>
 const COINCAP = (base) =>
   `https://assets.coincap.io/assets/icons/${base.toLowerCase()}@2x.png`;
 
+const CRYPTO_CDN_BASES = new Set([
+  "BTC", "ETH", "USDT", "USDC", "BNB", "SOL", "XRP", "DOGE", "ADA", "TRX", "LINK", "AVAX",
+  "XLM", "BCH", "LTC", "UNI", "SUI", "DOT", "ICP", "AAVE", "NEAR", "APT", "ARB", "OP",
+  "ETC", "ATOM", "FIL", "INJ", "HBAR", "VET", "TON", "MKR", "GRT", "CRV", "SNX", "MANA",
+  "SAND", "APE", "TIA", "JUP", "PYTH", "WLD", "SEI", "FET", "RUNE", "PENDLE", "ZEC",
+  "XMR", "HYPE", "ONDO", "ENA", "FLOKI", "BONK", "PEPE", "WIF", "TAO", "FARTCOIN",
+  "MORPHO", "SKY", "LAB", "M", "RE", "GRASS", "PUMP", "VIRTUAL", "KAITO", "JTO", "QNT",
+  "ALGO", "RAY", "COMP", "LDO", "EIGEN", "KAVA", "BLUR", "ZRO", "STX", "IMX", "GALA",
+  "BAT", "ONE", "AR", "KSM", "YFI", "ENS", "CELO", "MINA", "RNDR", "RENDER",
+]);
+
+function shouldTryCryptoCdn(base) {
+  return CRYPTO_CDN_BASES.has(base) || ICON_SET.has(base) || !!REMOTE[base];
+}
+
 // Real logo straight from a payload object (CoinGecko rows carry `image`);
 // the resolver chain is only the fallback. Use wherever a coin object exists.
 export function coinIcon(c, size = 22) {
+  if (!richIconsEnabled()) return tokenIcon((c && c.base) || "?", size);
   if (c && c.image) {
     const img = document.createElement("img");
     img.className = "tok-ico" + sizeClass(size);
@@ -166,10 +197,12 @@ export function coinIcon(c, size = 22) {
 // when the manifest resolves it. Never a blank circle, never a dead image.
 export function tokenIcon(symbol, size = 26) {
   const base = baseOf(symbol);
+  if (!richIconsEnabled()) return placeholderIcon(base, size);
   const chain = [];
   if (ICON_SET.has(base)) chain.push(`/static/icons/${base.toLowerCase()}.svg`);
   if (REMOTE[base]) chain.push(REMOTE[base]);
-  chain.push(COINCAP(base), SPOTHQ(base));
+  if (shouldTryCryptoCdn(base)) chain.push(COINCAP(base), SPOTHQ(base));
+  if (!chain.length) return placeholderIcon(base, size);
   const img = document.createElement("img");
   img.className = "tok-ico" + sizeClass(size);
   img.width = size; img.height = size;
@@ -183,8 +216,15 @@ export function tokenIcon(symbol, size = 26) {
     // tracked placeholder: upgrades in place if the manifest learns a URL later
     else img.replaceWith(placeholderIcon(base, size));
   });
+  setTimeout(() => {
+    if (img.isConnected && !img.complete) img.replaceWith(placeholderIcon(base, size));
+  }, 3500);
   img.src = chain[0];
   return img;
+}
+
+function richIconsEnabled() {
+  return document.documentElement.dataset.richIcons !== "off";
 }
 
 // Monogram-first path used when no URL is known YET: tracked for in-place
@@ -202,7 +242,8 @@ function sizeClass(size) {
 }
 
 export function hasIcon(symbol) {
-  return ICON_SET.has(baseOf(symbol));
+  const base = baseOf(symbol);
+  return ICON_SET.has(base) || !!REMOTE[base];
 }
 
 // Recognized token brand hues for sparklines / accents (vivid subset only —

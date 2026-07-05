@@ -17,13 +17,30 @@ const PAGE_SIZE = 25;
 
 const FILTERS = [
   { id: "all", label: "All" },
+  { id: "fresh", label: "Fresh rows" },
   { id: "major", label: "Majors" },
   { id: "alts", label: "Alts" },
   { id: "fundpos", label: "Funding +" },
   { id: "fundneg", label: "Funding −" },
-  { id: "25", label: "Basis ≥ 25" },
-  { id: "stale", label: "Stale" },
+  { id: "25", label: "Basis > 25" },
+  { id: "stale", label: "Stale cache" },
 ];
+
+const SORTS = [
+  { id: "basis", label: "Basis", sub: "largest gap", sort: "abs_basis", direction: "desc" },
+  { id: "fundingHi", label: "Funding +", sub: "shorts paid", sort: "funding", direction: "desc" },
+  { id: "fundingLo", label: "Funding -", sub: "longs paid", sort: "funding", direction: "asc" },
+  { id: "spread", label: "Friction", sub: "widest books", sort: "spot_spread", direction: "desc" },
+  { id: "score", label: "Score", sub: "signal rank", sort: "score", direction: "desc" },
+  { id: "spot", label: "Price", sub: "highest spot", sort: "spot_mid", direction: "desc" },
+];
+
+const SORT_ALIASES = {
+  abs_basis: "abs_basis_bps",
+  funding: "funding_rate",
+  spot_spread: "spot_spread_bps",
+  score: "opportunity_score",
+};
 
 const ADVANCED = [
   { key: "spot_bid", label: "Spot bid" },
@@ -39,12 +56,29 @@ const saveAdvanced = (s) => { try { localStorage.setItem("cg-cols", JSON.stringi
 // across navigation within a session.
 const BUF = { live: [], median: [], p95: [], fund: [] };
 const pushBuf = (a, v, cap = 160) => { const n = Number(v); if (isFinite(n)) { a.push(n); if (a.length > cap) a.shift(); } };
+const num = (v, fallback = 0) => {
+  const n = Number(v);
+  return isFinite(n) ? n : fallback;
+};
+const countText = (n, noun) => `${Number(n || 0).toLocaleString()} ${noun}${Number(n || 0) === 1 ? "" : "s"}`;
+const compactAge = (seconds) => seconds != null && isFinite(Number(seconds)) ? ago(seconds) : "warming";
+const compactEmpty = (text) => h("div", { class: "radar-compact-empty" }, text);
+const chipTone = (status) => status === "LIVE" || status === "OK" || status === "live"
+  ? "live"
+  : status === "STALE" || status === "stale"
+    ? "stale"
+    : "off";
 
 export function renderRadar(root) {
   let filter = "all", sort = "abs_basis", direction = "desc";
   let page = 1, pages = 1, total = 0;
   let advanced = loadAdvanced();
+  let coverage = null;
   let sparks = {};
+  let tableSeq = 0;
+  let tableRenderKey = "";
+  let latestRows = [];
+  let latestHealth = null;
   const rowMap = new Map();
   const cleanups = [];
 
@@ -52,19 +86,24 @@ export function renderRadar(root) {
   const tape = buildTape();
   cleanups.push(tape.destroy);
 
-  // ---- stat tiles (Coinbase "Market stats") ----
+  // ---- stat tiles (Coinbase/TradingView style market stats, but scoped to the radar universe) ----
   const tiles = {};
-  function tile(key, label) {
+  function tile(key, label, ico, note) {
     const v = h("div", { class: "stat-v num" }, "—");
+    const n = h("div", { class: "stat-note" }, note || "");
     const s = h("div", { class: "stat-spark" });
-    tiles[key] = { v, s };
-    return h("div", { class: "stat-tile" }, h("div", { class: "stat-k" }, label), v, s);
+    tiles[key] = { v, n, s };
+    return h("div", { class: "stat-tile radar-stat" },
+      h("div", { class: "radar-stat-head" }, icon(ico, "radar-stat-icon"), h("div", { class: "stat-k" }, label)),
+      v,
+      n,
+      s);
   }
-  const statsWrap = h("div", { class: "stats" },
-    tile("live", "Live coverage"),
-    tile("median", "Median |basis|"),
-    tile("p95", "P95 |basis|"),
-    tile("fund", "Peak funding"));
+  const statsWrap = h("div", { class: "stats radar-stats" },
+    tile("live", "Exchange universe", "globe", "cached spot/perp markets"),
+    tile("median", "Typical basis", "activity", "median absolute gap"),
+    tile("p95", "Stress band", "barChart", "95th percentile gap"),
+    tile("fund", "Funding extreme", "zap", "largest current rate"));
 
   function paintStats(lite) {
     const m = (lite && lite.metrics) || {};
@@ -72,21 +111,32 @@ export function renderRadar(root) {
     pushBuf(BUF.median, m.median_abs_basis_bps);
     pushBuf(BUF.p95, m.p95_abs_basis_bps);
     pushBuf(BUF.fund, (m.highest_funding_rate || 0) * 100);
-    setTile("live", m.live_symbols != null ? `${m.live_symbols} / ${m.total_symbols}` : "—", BUF.live);
-    setTile("median", m.median_abs_basis_bps != null ? fmtBps(m.median_abs_basis_bps) + " bps" : "—", BUF.median);
-    setTile("p95", m.p95_abs_basis_bps != null ? fmtBps(m.p95_abs_basis_bps) + " bps" : "—", BUF.p95);
-    setTile("fund", m.highest_funding_rate != null ? fmtFunding(m.highest_funding_rate) : "—", BUF.fund);
+    const total = m.total_symbols ?? m.latest_symbols_count;
+    const live = Number(m.live_symbols || 0);
+    const age = m.collector_age_seconds ?? m.freshest_update_age_seconds;
+    const sourceNote = live > 0
+      ? `${countText(live, "fresh row")} · public spot/perp feed`
+      : total != null
+        ? `snapshot stale · latest ${compactAge(age)}`
+        : "source cache warming";
+    setTile("live", total != null ? countText(total, "market") : "warming", BUF.live, sourceNote);
+    setTile("median", m.median_abs_basis_bps != null ? fmtBps(m.median_abs_basis_bps) + " bps" : "warming", BUF.median);
+    setTile("p95", m.p95_abs_basis_bps != null ? fmtBps(m.p95_abs_basis_bps) + " bps" : "warming", BUF.p95);
+    setTile("fund", m.highest_funding_rate != null ? fmtFunding(m.highest_funding_rate) : "warming", BUF.fund);
+    paintSourceChips(latestRows);
   }
-  function setTile(k, text, buf) {
+  function setTile(k, text, buf, note) {
     tiles[k].v.textContent = text;
+    if (note) tiles[k].n.textContent = note;
     if (buf.length >= 2) {
       const up = buf[buf.length - 1] >= buf[0];
       tiles[k].s.innerHTML = sparkline(buf, 150, 36, up ? "var(--up)" : "var(--down)");
     }
   }
 
-  // ---- basis-focused signal columns (funding lives on /funding) ----
+  // ---- grouped microstructure boards ----
   const signalsWrap = h("div", { class: "signals" });
+  const pulseWrap = h("div", { class: "radar-pulse-grid" });
   let moverRows = null;   // 15m basis movers
   function paintSignals(rows) {
     const openBasis = (sym) => navigate("/symbol/" + sym + "?tab=basis");
@@ -99,25 +149,57 @@ export function renderRadar(root) {
           h("span", { class: "sig-name" }, baseOf(r.symbol)),
           h("span", { class: "sig-val num " + clsFn(r) }, valFn(r)))));
     const byB = [...rows].sort((a, b) => b.abs_basis_bps - a.abs_basis_bps);
-    const byS = [...rows].sort((a, b) => b.opportunity_score - a.opportunity_score);
+    const byFunding = [...rows].sort((a, b) => Math.abs(num(b.funding_rate)) - Math.abs(num(a.funding_rate)));
+    const byFriction = [...rows].sort((a, b) =>
+      (num(b.spot_spread_bps) + num(b.futures_spread_bps)) - (num(a.spot_spread_bps) + num(a.futures_spread_bps)));
     const widen = (moverRows && moverRows.top_basis_widening) || [];
     const compress = (moverRows && moverRows.top_basis_compression) || [];
     mount(signalsWrap,
-      mk("Widest basis", "Sort table ›", byB, (r) => fmtBps(r.mid_spread_bps, true) + " bps", (r) => signClass(r.mid_spread_bps),
-        () => { sort = "abs_basis"; direction = "desc"; page = 1; buildHead(); loadTable(); }),
-      mk("Widening · 15m", "Movers ›", widen, (r) => fmtBps(r.basis_change_bps, true) + " bps", () => "up",
-        () => navigate("/movers")),
-      mk("Compressing · 15m", "Movers ›", compress, (r) => fmtBps(r.basis_change_bps, true) + " bps", () => "down",
-        () => navigate("/movers")),
-      mk("Top score", "Sort table ›", byS, (r) => fmtScore(r.opportunity_score), () => "strong",
-        () => { sort = "score"; direction = "desc"; page = 1; buildHead(); loadTable(); }));
+      mk("Basis outliers", "Sort table ›", byB, (r) => fmtBps(r.mid_spread_bps, true) + " bps", (r) => signClass(r.mid_spread_bps),
+        () => { sort = "abs_basis"; direction = "desc"; page = 1; resetRows(); buildHead(); buildSortStrip(); loadTable(); }),
+      mk("Funding skew", "Per 8h ›", byFunding, (r) => fmtFunding(r.funding_rate), (r) => signClass(r.funding_rate),
+        () => { sort = "funding"; direction = "desc"; page = 1; resetRows(); buildHead(); buildSortStrip(); loadTable(); }),
+      mk("Book friction", "Spot + perp ›", byFriction, (r) => fmtBps(num(r.spot_spread_bps) + num(r.futures_spread_bps)) + " bps", () => "muted",
+        () => { sort = "spot_spread"; direction = "desc"; page = 1; resetRows(); buildHead(); buildSortStrip(); loadTable(); }),
+      mk("15m basis tape", "Movers ›", [...widen.slice(0, 2), ...compress.slice(0, 2)],
+        (r) => fmtBps(r.basis_change_bps, true) + " bps",
+        (r) => num(r.basis_change_bps) >= 0 ? "up" : "down",
+        () => navigate("/movers")));
+  }
+
+  function pulseCard(label, value, note, tone = "") {
+    return h("div", { class: "radar-pulse-card " + tone },
+      h("span", { class: "radar-pulse-k" }, label),
+      h("b", { class: "radar-pulse-v num" }, value),
+      h("span", { class: "radar-pulse-note" }, note));
+  }
+
+  function paintPulse(rows) {
+    if (!rows.length) {
+      mount(pulseWrap, compactEmpty("Microstructure cache is warming."));
+      return;
+    }
+    const live = rows.filter((r) => r.status === "LIVE").length;
+    const stale = rows.length - live;
+    const activeBasis = rows.filter((r) => num(r.abs_basis_bps) >= 25).length;
+    const stressBasis = rows.filter((r) => num(r.abs_basis_bps) >= 50).length;
+    const posFunding = rows.filter((r) => num(r.funding_rate) > 0).length;
+    const negFunding = rows.filter((r) => num(r.funding_rate) < 0).length;
+    const wideBooks = rows.filter((r) => num(r.spot_spread_bps) + num(r.futures_spread_bps) >= 10).length;
+    const medianAge = [...rows].map((r) => num(r.age_seconds, NaN)).filter(isFinite).sort((a, b) => a - b);
+    const age = medianAge.length ? medianAge[Math.floor(medianAge.length / 2)] : null;
+    mount(pulseWrap,
+      pulseCard("Basis bands", `${activeBasis} active`, stressBasis ? `${stressBasis} above 50 bps` : "none above 50 bps", activeBasis ? "warn" : "ok"),
+      pulseCard("Funding split", `${posFunding} positive · ${negFunding} negative`, "directional carry pressure", Math.abs(posFunding - negFunding) > rows.length * 0.3 ? "warn" : "ok"),
+      pulseCard("Book friction", countText(wideBooks, "wide book"), "spot + perp spread >= 10 bps", wideBooks ? "warn" : "ok"),
+      pulseCard("Freshness", live ? countText(live, "fresh row") : "stale snapshot", stale ? `${countText(stale, "cached row")} · median ${compactAge(age)}` : "all rows fresh", live ? "ok" : "stale"));
   }
 
   // ---- basis distribution (signed, clamped at p95) ----
   const distWrap = h("div", { class: "dist-chart" });
   function paintDistribution(rows) {
     const vals = rows.map((r) => Number(r.mid_spread_bps)).filter(isFinite);
-    if (vals.length < 5) { mount(distWrap, h("div", { class: "empty-state" }, "No data yet.")); return; }
+    if (vals.length < 5) { mount(distWrap, compactEmpty("Basis distribution is warming.")); return; }
     const abs = vals.map(Math.abs).sort((a, b) => a - b);
     const lim = Math.max(abs[Math.floor(abs.length * 0.95)] || 1, 5);
     const N = 18;
@@ -139,6 +221,7 @@ export function renderRadar(root) {
   // ---- regime + sub line ----
   const regimePill = h("span", { class: "pill-regime" });
   const subLine = h("div", { class: "page-sub" }, "loading…");
+  const coverageLine = h("div", { class: "radar-scope radar-source-chips" });
   function paintRegime(rows) {
     const total_ = rows.length || 1;
     const pos = rows.filter((r) => r.funding_rate > 0).length;
@@ -156,7 +239,37 @@ export function renderRadar(root) {
   function paintSub(rows) {
     const live = rows.filter((r) => r.status === "LIVE").length;
     const age = store.lite && store.lite.cache ? store.lite.cache.cache_age_seconds : null;
-    mount(subLine, `${rows.length} symbols · ${live} live · updated ${age != null ? ago(age) : "now"}`);
+    const liveState = live ? countText(live, "fresh row") : "stale snapshot";
+    mount(subLine, `${countText(rows.length, "spot/perp market")} · ${liveState} · cache checked ${age != null ? ago(age) : "now"}`);
+    paintCoverageLine(rows.length);
+  }
+  function paintCoverageLine(tracked = null) {
+    paintSourceChips(tracked != null ? latestRows.slice(0, tracked) : latestRows);
+  }
+  function sourceChip(label, value, tone = "") {
+    return h("span", { class: "radar-source-chip " + tone },
+      h("span", { class: "radar-source-label" }, label),
+      h("b", {}, value));
+  }
+  function paintSourceChips(rows = latestRows) {
+    const lite = store.lite || {};
+    const m = lite.metrics || {};
+    const hlt = latestHealth || lite.health || {};
+    const total = m.total_symbols ?? hlt.tracked_symbols ?? (rows && rows.length);
+    const live = m.live_symbols ?? (rows || []).filter((r) => r.status === "LIVE").length;
+    const stale = m.stale_symbols ?? (rows || []).filter((r) => r.status !== "LIVE").length;
+    const age = m.collector_age_seconds ?? m.freshest_update_age_seconds ?? hlt.freshness_age_seconds;
+    const healthStatus = hlt.status || (live ? "LIVE" : stale ? "STALE" : "warming");
+    const coverageText = coverage && coverage.ok && coverage.common_count != null
+      ? countText(coverage.common_count, `${coverage.quote || "USDT"} overlap`)
+      : coverage && coverage.error
+        ? "coverage check unavailable"
+        : "coverage check warming";
+    mount(coverageLine,
+      sourceChip("Universe", total != null ? countText(total, "cached market") : "warming", chipTone(healthStatus)),
+      sourceChip("Freshness", live ? countText(live, "fresh row") : `stale · ${compactAge(age)}`, live ? "live" : "stale"),
+      sourceChip("Venue coverage", coverageText, coverage && coverage.ok ? "live" : "stale"),
+      sourceChip("Integrity", "no synthetic pairs", "live"));
   }
 
   // ---- table ----
@@ -164,6 +277,8 @@ export function renderRadar(root) {
   const tbody = h("tbody");
   const table = h("table", { class: "mkt" }, thead, tbody);
   const chips = h("div", { class: "chips" });
+  const sortStrip = h("div", { class: "sort-strip radar-sort-strip" });
+  const sortState = h("div", { class: "sort-state" }, "Sorted by basis");
   const colsBtn = h("button", { class: "mini-btn", onClick: openColsPopover }, icon("columns"), "Columns");
   const foot = h("div", { class: "table-foot" });
 
@@ -172,18 +287,19 @@ export function renderRadar(root) {
       { key: "star", label: "", cls: "l w-star" },
       { key: "idx", label: "#", cls: "l w-idx" },
       { key: "token", label: "Token", cls: "l", sort: "symbol" },
+      { key: "venue", label: "Venues", cls: "l col-hide-sm" },
       { key: "chart", label: "Chart", cls: "l col-hide-xs" },
-      { key: "spot", label: "Spot", sort: "spot_mid" },
+      { key: "spot", label: "Spot mid", sort: "spot_mid" },
     ];
     if (advanced.has("spot_bid")) cols.push({ key: "spot_bid", label: "Spot bid", sort: "spot_bid" });
     if (advanced.has("spot_ask")) cols.push({ key: "spot_ask", label: "Spot ask", sort: "spot_ask" });
-    cols.push({ key: "perp", label: "Perp", sort: "perp_mid" });
+    cols.push({ key: "perp", label: "Perp mid", sort: "perp_mid" });
     if (advanced.has("fut_bid")) cols.push({ key: "fut_bid", label: "Perp bid", sort: "perp_bid" });
     if (advanced.has("fut_ask")) cols.push({ key: "fut_ask", label: "Perp ask", sort: "perp_ask" });
     cols.push(
       { key: "basis", label: "Basis (" + basisUnit() + ")", sort: "abs_basis" },
       { key: "funding", label: "Funding", sort: "funding" },
-      { key: "spread", label: "Spread", sort: "spot_spread", cls: "col-hide-sm" },
+      { key: "spread", label: "Friction", sort: "spot_spread", cls: "col-hide-sm" },
       { key: "age", label: "Age", sort: "age", cls: "col-hide-sm" },
       { key: "score", label: "Score", sort: "score", cls: "col-hide-sm" },
       { key: "status", label: "Status", cls: "col-hide-xs" },
@@ -194,19 +310,49 @@ export function renderRadar(root) {
   function buildHead() {
     const tr = h("tr");
     for (const c of columns()) {
-      const th = h("th", { class: (c.cls || "") + (c.sort ? " sortable" : "") + (c.sort === sort ? " sorted" : "") });
+      const active = c.sort && sameSort(c.sort, sort);
+      const th = h("th", { class: (c.cls || "") + (c.sort ? " sortable" : "") + (active ? " sorted" : "") });
       th.append(c.label);
       if (c.sort) {
-        th.appendChild(h("span", { class: "sort-caret" }, c.sort === sort ? (direction === "desc" ? "▼" : "▲") : "▾"));
+        th.appendChild(h("span", { class: "sort-caret" }, active ? (direction === "desc" ? "▼" : "▲") : "▾"));
         th.addEventListener("click", () => {
-          if (sort === c.sort) direction = direction === "desc" ? "asc" : "desc";
+          if (sameSort(sort, c.sort)) direction = direction === "desc" ? "asc" : "desc";
           else { sort = c.sort; direction = "desc"; }
-          page = 1; buildHead(); loadTable();
+          page = 1; resetRows(); buildHead(); buildSortStrip(); loadTable();
         });
       }
       tr.appendChild(th);
     }
     mount(thead, tr);
+  }
+
+  function canonicalSort(name) {
+    return SORT_ALIASES[name] || name;
+  }
+  function sameSort(a, b) {
+    return canonicalSort(a) === canonicalSort(b);
+  }
+  function sortLabel() {
+    const s = SORTS.find((x) => sameSort(x.sort, sort) && x.direction === direction)
+      || SORTS.find((x) => sameSort(x.sort, sort));
+    return s ? `${s.label} ${direction === "asc" ? "low first" : "high first"}` : `${sort} ${direction}`;
+  }
+  function buildSortStrip() {
+    mount(sortStrip, SORTS.map((s) => {
+      const active = sameSort(s.sort, sort) && s.direction === direction;
+      return h("button", { class: "sort-pill" + (active ? " active" : ""), onClick: () => {
+        sort = s.sort;
+        direction = s.direction;
+        page = 1;
+        resetRows();
+        buildHead();
+        buildSortStrip();
+        loadTable();
+      } },
+        h("span", { class: "sort-pill-main" }, s.label),
+        h("span", { class: "sort-pill-sub" }, s.sub));
+    }));
+    sortState.textContent = "Sorted by " + sortLabel();
   }
 
   const STATIC_KEYS = new Set(["star", "token", "cta"]);
@@ -239,6 +385,9 @@ export function renderRadar(root) {
             h("span", { class: "tok-name" }, baseOf(row.symbol)),
             h("span", { class: "tok-sub num" }, row.symbol))));
         td.className = "l"; break;
+      case "venue":
+        mount(td, h("span", { class: "radar-venue-chip" }, h("b", {}, "1 venue"), h("span", {}, "spot/perp")));
+        td.className = "l col-hide-sm"; break;
       case "chart": {
         td.className = "l col-hide-xs";
         const pts = sparks[row.symbol];
@@ -299,9 +448,21 @@ export function renderRadar(root) {
     }
   }
 
+  function resetRows() {
+    tbody.replaceChildren();
+    rowMap.clear();
+    tableRenderKey = "";
+  }
+
   function syncRows(rows) {
+    Array.from(tbody.children).forEach((tr) => {
+      if (!tr._symbol) tr.remove();
+    });
     if (!rows.length && !rowMap.size) {
-      mount(tbody, h("tr", {}, h("td", { colspan: columns().length, class: "l empty-state" }, "No symbols match this filter.")));
+      const msg = filter === "fresh"
+        ? "No fresh rows in the current cache. Source health is summarized above."
+        : "No markets match this filter.";
+      mount(tbody, h("tr", {}, h("td", { colspan: columns().length, class: "l empty-state" }, msg)));
       return;
     }
     const seen = new Set();
@@ -334,18 +495,23 @@ export function renderRadar(root) {
     mount(chips, FILTERS.map((f) =>
       h("button", { class: "chip" + (f.id === filter ? " active" : ""), onClick: () => {
         filter = f.id; page = 1; buildChips();
-        rowMap.forEach((tr) => tr.remove()); rowMap.clear();
+        resetRows();
         loadTable();
       } }, f.label)));
   }
 
   function paintFoot() {
+    if (total === 0) {
+      const label = filter === "fresh" ? "No fresh rows in the current cache" : "No rows for this filter";
+      mount(foot, h("span", { class: "radar-foot-state" }, label));
+      return;
+    }
     const start = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
     const end = Math.min(total, page * PAGE_SIZE);
     const pager = h("div", { class: "pager" });
     const mk = (label, p, opts = {}) => h("button", {
       class: opts.current ? "current" : "", disabled: opts.disabled,
-      onClick: () => { if (!opts.disabled && !opts.current) { page = p; loadTable(); } },
+      onClick: () => { if (!opts.disabled && !opts.current) { page = p; resetRows(); loadTable(); } },
     }, label);
     pager.appendChild(mk("‹", page - 1, { disabled: page <= 1 }));
     pageNumbers(page, pages).forEach((n) =>
@@ -370,7 +536,7 @@ export function renderRadar(root) {
       pop.appendChild(h("div", { class: "toggle-row", style: { padding: "9px 11px" }, onClick: () => {
         if (advanced.has(a.key)) advanced.delete(a.key); else advanced.add(a.key);
         saveAdvanced(advanced); sw.classList.toggle("on");
-        rowMap.forEach((tr) => tr.remove()); rowMap.clear();
+        resetRows();
         buildHead(); loadTable();
       } }, h("span", { class: "k", style: { fontSize: "13px" } }, a.label), sw));
     });
@@ -382,9 +548,21 @@ export function renderRadar(root) {
   // ---- data loaders ----
   async function loadTable() {
     try {
+      const seq = ++tableSeq;
+      const requestKey = [page, filter, sort, direction, Array.from(advanced).sort().join(",")].join("|");
       const res = await api.pages({ page, page_size: PAGE_SIZE, sort, direction, filter });
+      if (seq !== tableSeq) return;
       page = res.page; pages = res.pages; total = res.total;
+      sort = res.sort || sort;
+      direction = res.direction || direction;
+      latestHealth = res.health || latestHealth;
+      paintSourceChips(latestRows);
+      const renderKey = [page, filter, sort, direction, Array.from(advanced).sort().join(",")].join("|");
+      if (renderKey !== tableRenderKey && renderKey !== requestKey) resetRows();
+      tableRenderKey = renderKey;
       syncRows(res.rows || []);
+      buildHead();
+      buildSortStrip();
       paintFoot();
     } catch (e) { /* keep last good */ }
   }
@@ -393,8 +571,21 @@ export function renderRadar(root) {
       const [res, mv] = await Promise.all([api.radar("all", 600), api.movers(15)]);
       moverRows = mv && mv.ok !== false ? mv : moverRows;
       const rows = res.rows || [];
-      paintSignals(rows); paintRegime(rows); paintSub(rows); paintDistribution(rows);
+      latestRows = rows;
+      latestHealth = res.health || latestHealth;
+      paintSignals(rows); paintPulse(rows); paintRegime(rows); paintSub(rows); paintDistribution(rows); paintSourceChips(rows);
     } catch (e) {}
+  }
+  async function loadCoverage() {
+    try {
+      coverage = await api.binanceCoverage();
+      const tracked = store.lite && store.lite.metrics ? store.lite.metrics.total_symbols : total;
+      paintCoverageLine(tracked);
+      paintStats(store.lite);
+    } catch (e) {
+      coverage = { ok: false, error: e && e.message ? e.message : "request failed" };
+      paintCoverageLine(total);
+    }
   }
   async function loadSparks() {
     try {
@@ -411,34 +602,47 @@ export function renderRadar(root) {
   }
 
   // ---- assemble ----
-  const page_ = h("div", { class: "page" },
+  const page_ = h("div", { class: "page radar-page" },
     h("div", { class: "container" },
       h("div", { class: "page-head" },
-        h("div", {}, h("h1", { class: "page-title" }, "Radar"), subLine),
+        h("div", {}, h("h1", { class: "page-title" }, "Microstructure Radar"), subLine, coverageLine),
         regimePill),
       statsWrap,
-      h("div", { class: "sec-head" }, h("h2", { class: "sec-title" }, "Basis signals")),
-      signalsWrap,
-      h("div", { class: "sec-head" }, h("h2", { class: "sec-title" }, "Basis distribution"),
-        h("span", { class: "sec-note" }, "signed basis across the universe · clamped at p95")),
-      distWrap,
-      h("div", { class: "sec-head" }, h("h2", { class: "sec-title" }, "Market"),
-        h("span", { class: "sec-note" }, "spot vs USD-M perp · basis in " + basisUnit())),
-      h("div", { class: "table-tools" }, chips, h("div", { class: "spacer" }), colsBtn),
-      h("div", { class: "table-scroll" }, table),
-      foot));
+      h("div", { class: "radar-top-grid" },
+        h("section", { class: "radar-panel radar-panel-signals" },
+          h("div", { class: "sec-head" }, h("h2", { class: "sec-title" }, "Microstructure leaders"),
+            h("span", { class: "sec-note" }, "basis · funding · book friction · 15m movement")),
+          signalsWrap),
+        h("section", { class: "radar-panel radar-panel-pulse" },
+          h("div", { class: "sec-head" }, h("h2", { class: "sec-title" }, "Market pulse"),
+            h("span", { class: "sec-note" }, "compact health bands from the current cache")),
+          pulseWrap)),
+      h("section", { class: "radar-panel radar-panel-dist" },
+        h("div", { class: "sec-head" }, h("h2", { class: "sec-title" }, "Basis distribution"),
+          h("span", { class: "sec-note" }, "signed basis across cached markets · extremes trimmed for readability")),
+        distWrap),
+      h("section", { class: "radar-panel radar-panel-table" },
+        h("div", { class: "sec-head" }, h("h2", { class: "sec-title" }, "Market screener"),
+          h("span", { class: "sec-note" }, "spot/perp midpoints · funding · friction · freshness · basis in " + basisUnit())),
+        h("div", { class: "radar-sort-head" }, sortStrip, sortState),
+        h("div", { class: "table-tools" }, chips, h("div", { class: "spacer" }), colsBtn),
+        h("div", { class: "table-scroll" }, table),
+        foot)));
 
   mount(root, tape.el, page_);
   buildChips();
   buildHead();
+  buildSortStrip();
   paintStats(store.lite);
-  cleanups.push(onLive((lite) => { paintStats(lite); }));
+  paintCoverageLine(store.lite && store.lite.metrics ? store.lite.metrics.total_symbols : null);
+  cleanups.push(onLive((lite) => { paintStats(lite); paintCoverageLine(lite && lite.metrics ? lite.metrics.total_symbols : null); }));
 
-  loadTable(); loadSignals(); loadSparks();
+  loadTable(); loadSignals(); loadSparks(); loadCoverage();
   const t1 = setInterval(loadTable, 4000);
   const t2 = setInterval(loadSignals, 8000);
   const t3 = setInterval(loadSparks, 12000);
-  cleanups.push(() => { clearInterval(t1); clearInterval(t2); clearInterval(t3); });
+  const t4 = setInterval(loadCoverage, 600000);
+  cleanups.push(() => { clearInterval(t1); clearInterval(t2); clearInterval(t3); clearInterval(t4); });
 
   return () => cleanups.forEach((c) => c());
 }

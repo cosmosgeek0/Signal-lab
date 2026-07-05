@@ -1,12 +1,10 @@
-// Asset page — full asset profile with real market data.
-// Price/Volume/Market-cap charts use REAL CoinGecko market_chart history for
-// any coin (24h…all windows); Basis/Funding/Spread use local Binance history.
-// Overview · Price · Basis · Funding · Spread · Market stats · News · Quality.
+// Asset profile page. Exchange-native chart first, external metadata second.
+// No fake history, no "NaN", no dead clickable surfaces.
 
 import { h, mount } from "../lib/dom.js";
 import { icon, tokenIcon, starIcon } from "../lib/icons.js";
 import { api } from "../lib/api.js";
-import { linkTo, isStarred, toggleStar, getTheme } from "../lib/store.js";
+import { linkTo, navigate, isStarred, toggleStar, getTheme, store } from "../lib/store.js";
 import {
   baseOf, quoteOf, fmtPrice, fmtMoney, fmtBps, fmtBasisVal, basisUnit, fmtFunding,
   fmtScore, fmtAge, fmtPct, signClass, fmtTimeShort, fmtDateTime, fmtCompact,
@@ -24,69 +22,245 @@ const TABS = [
   { id: "news", label: "News", chart: null },
   { id: "quality", label: "Quality", chart: null },
 ];
+
+const PRICE_WINDOWS = [
+  ["1h", "1h"],
+  ["24h", "1"],
+  ["7d", "7"],
+  ["30d", "30"],
+  ["1y", "365"],
+  ["5y", "1825"],
+  ["all", "max"],
+];
 const LOCAL_WINDOWS = ["5m", "15m", "1h", "4h", "24h", "7d", "all"];
-const EXT_WINDOWS = [["24h", "1"], ["7d", "7"], ["30d", "30"], ["90d", "90"], ["1y", "365"], ["all", "max"]];
-const PRICE_SERIES = [["price", "Price"], ["volume", "Volume"], ["mcap", "Mkt cap"]];
+const PRICE_SERIES = [["price", "Price"], ["volume", "Volume"], ["mcap", "Market cap"]];
+const PERIODS = [
+  ["1 day", 24 * 3600 * 1000],
+  ["1 week", 7 * 24 * 3600 * 1000],
+  ["1 month", 30 * 24 * 3600 * 1000],
+  ["6 months", 182 * 24 * 3600 * 1000],
+  ["1 year", 365 * 24 * 3600 * 1000],
+  ["5 years", 5 * 365 * 24 * 3600 * 1000],
+  ["All time", null],
+];
+
+const WINDOW_MS = {
+  "5m": 5 * 60 * 1000,
+  "15m": 15 * 60 * 1000,
+  "1h": 60 * 60 * 1000,
+  "4h": 4 * 60 * 60 * 1000,
+  "24h": 24 * 60 * 60 * 1000,
+  "7d": 7 * 24 * 60 * 60 * 1000,
+  all: 24 * 60 * 60 * 1000,
+};
+
+const ABOUT = {
+  BTC: "Bitcoin is the original decentralized digital asset. It settles transfers on a public blockchain, has a fixed supply schedule, and is widely used as the market's reserve crypto benchmark.",
+  ETH: "Ethereum is a programmable blockchain used for smart contracts, DeFi, token issuance, stablecoins, NFTs, and settlement across many on-chain applications.",
+  SOL: "Solana is a high-throughput blockchain focused on fast settlement, consumer applications, DeFi, and low-cost on-chain execution.",
+  BNB: "BNB is the native asset associated with the BNB Chain ecosystem and Binance-linked utility, used across exchange, chain, and application activity.",
+  XRP: "XRP is a digital asset used by the XRP Ledger, a payments-focused blockchain designed around fast settlement and low transaction costs.",
+  DOGE: "Dogecoin is an early proof-of-work cryptocurrency known for simple transfers, high liquidity, and broad retail market recognition.",
+  USDT: "Tether USDt is a dollar-referenced stablecoin used as a major settlement and quote asset across crypto venues.",
+  USDC: "USD Coin is a dollar-referenced stablecoin commonly used for payments, DeFi liquidity, and exchange settlement.",
+};
+
+const SLUGS = {
+  BTC: "bitcoin",
+  ETH: "ethereum",
+  SOL: "solana",
+  BNB: "bnb",
+  XRP: "xrp",
+  DOGE: "dogecoin",
+  ADA: "cardano",
+  TRX: "tron",
+  LINK: "chainlink",
+  AVAX: "avalanche-2",
+  XLM: "stellar",
+  BCH: "bitcoin-cash",
+  LTC: "litecoin",
+  UNI: "uniswap",
+  DOT: "polkadot",
+  MATIC: "matic-network",
+  USDT: "tether",
+  USDC: "usd-coin",
+};
+
+const CMC_SLUGS = {
+  BTC: "bitcoin",
+  ETH: "ethereum",
+  SOL: "solana",
+  BNB: "bnb",
+  XRP: "xrp",
+  DOGE: "dogecoin",
+  ADA: "cardano",
+  TRX: "tron",
+  LINK: "chainlink",
+  AVAX: "avalanche",
+  XLM: "stellar",
+  BCH: "bitcoin-cash",
+  LTC: "litecoin",
+  UNI: "uniswap",
+  DOT: "polkadot-new",
+  MATIC: "polygon",
+  USDT: "tether",
+  USDC: "usd-coin",
+};
 
 const chartSrcPref = () => { try { return localStorage.getItem("cg-chartsrc") || "native"; } catch (e) { return "native"; } };
 const setChartSrcPref = (v) => { try { localStorage.setItem("cg-chartsrc", v); } catch (e) {} };
+const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+const safePct = (v, digits = 2) => num(v) == null ? "—" : fmtPct(v, digits);
+const pctSigned = (v) => num(v) == null ? "—" : (Number(v) >= 0 ? "↗ " : "↘ ") + fmtPct(Number(v));
+const byTime = (arr) => (arr || []).map(([t, v]) => ({ t: Number(t), v: Number(v) }))
+  .filter((p) => Number.isFinite(p.t) && Number.isFinite(p.v));
+const profileSlug = (base, id) => (id || SLUGS[base] || base.toLowerCase());
+const cmcSlug = (base, id) => (CMC_SLUGS[base] || id || base.toLowerCase());
 
 export function renderSymbol(root, symbol) {
   const params = new URLSearchParams(location.search);
   let tab = TABS.some((t) => t.id === params.get("tab")) ? params.get("tab") : "overview";
-  let win = "1h";              // local windows (basis/funding/spread + fallback)
-  let extWin = "24h";          // external windows (real price history)
-  let priceSeries = "price";   // price | volume | mcap
-  let chartSrc = chartSrcPref(); // native | tv (TradingView widget)
-  let history = [];            // local Binance rows
-  let extCache = {};           // days -> {prices, volumes, mcaps}
+  let win = "1h";
+  let priceWin = "24h";
+  let priceSeries = "price";
+  let chartSrc = chartSrcPref();
+  let history = [];
   let latest = null;
+  let profile = null;
   let coin = null;
   let news = null;
+  let extCache = {};
+  let hadHistory = false;
+  let resizeTimer = null;
+  let extRetryTimer = null;
+
+  const base = baseOf(symbol);
+  const quote = quoteOf(symbol) || "USDT";
+  const cleanSymbol = base + quote;
   const cleanups = [];
-  const base = baseOf(symbol), quote = quoteOf(symbol) || "USDT";
 
-  // ---- header ----
-  const starBtn = h("button", { class: "icon-btn", title: "Watch", onClick: () => { toggleStar(symbol); paintStar(); } });
-  const nameEl = h("div", { class: "detail-name" }, base);
-  const subEl = h("div", { class: "detail-sub" }, `${base}/${quote} · Binance spot & USD-M perp`);
-  const iconSlot = h("span", {}, tokenIcon(symbol, 48));
-  const srcBadges = h("div", { class: "src-badges" });
+  const page = h("div", { class: "page asset-pro" },
+    h("div", { class: "container page-wide asset-pro-wrap" }));
+  const shell = page.querySelector(".asset-pro-wrap");
+  mount(root, page);
 
-  // ---- price-first headline ----
-  const hlVal = h("span", { class: "headline-val num" }, "—");
-  const hlUnit = h("span", { class: "headline-unit" }, quote);
-  const hl24 = h("span", { class: "hl-chip num", style: { display: "none" } });
-  const hlBasis = h("span", { class: "hl-chip num" });
-  const hlFund = h("span", { class: "hl-chip muted-chip num" });
-  const headline = h("div", { class: "headline" }, hlVal, hlUnit, hl24, hlBasis, hlFund);
+  const starBtn = h("button", { class: "icon-btn asset-star", title: "Watch", onClick: () => { toggleStar(cleanSymbol); paintStar(); } });
+  const titleIcon = h("div", { class: "asset-title-icon" }, tokenIcon(base, 120));
+  const titleEl = h("h1", { class: "asset-title" }, base);
+  const pairChip = h("button", { class: "asset-pair-chip", onClick: () => navigate(`/symbol/${cleanSymbol}`) },
+    cleanSymbol, h("span", {}, "Crypto assets"));
+  const liveChip = h("span", { class: "asset-live-chip" }, h("span", { class: "dot" }), "Connecting");
+  const priceEl = h("span", { class: "asset-price headline-val num" }, "—");
+  const quoteEl = h("span", { class: "asset-price-quote" }, quote);
+  const changeEl = h("span", { class: "asset-change num" }, "—");
+  const asOfEl = h("div", { class: "asset-asof" }, "Loading market data...");
+  const heroStats = h("div", { class: "asset-hero-stats" });
+  const tabBar = h("div", { class: "atabs asset-tabs", role: "tablist" });
+  const chartModeSeg = h("div", { class: "seg asset-chart-mode" });
+  const chartSourceSeg = h("div", { class: "seg asset-source-mode" });
+  const windowSeg = h("div", { class: "win asset-windows" });
+  const chartMeta = h("div", { class: "chart-meta" });
+  const chartBody = h("div", { class: "chart-body asset-chart-body" });
+  const returnStrip = h("div", { class: "asset-return-strip" });
+  const marketContext = h("section", { class: "asset-market-context" });
+  const sideRail = h("aside", { class: "asset-side" });
+  const terminalRail = h("aside", { class: "asset-terminal-rail" });
+  const chartShell = h("section", { class: "asset-chart-card chart-shell" },
+    h("div", { class: "chart-head asset-chart-head" },
+      chartModeSeg,
+      chartSourceSeg,
+      h("div", { class: "spacer" }),
+      windowSeg),
+    chartBody,
+    h("div", { class: "asset-chart-foot" }, chartMeta),
+    returnStrip);
+  const terminalGrid = h("div", { class: "asset-terminal-grid" }, chartShell, terminalRail);
+  const mainBody = h("div", { class: "asset-body" });
 
-  function paintHeadline() {
-    const px = coin && coin.price != null ? Number(coin.price) : latest ? Number(latest.spot_mid) : null;
-    if (px != null) countUp(hlVal, px, fmtPrice);
-    if (coin && coin.chg24h != null) {
-      hl24.style.display = "";
-      hl24.className = "hl-chip num " + signClass(coin.chg24h);
-      hl24.textContent = (coin.chg24h >= 0 ? "↗ " : "↘ ") + fmtPct(coin.chg24h) + " · 24h";
-    }
-    if (latest) {
-      const b = Number(latest.mid_spread_bps || 0);
-      hlBasis.className = "hl-chip num " + signClass(b);
-      hlBasis.textContent = "basis " + fmtBasisVal(b, true) + " " + basisUnit();
-      hlFund.textContent = fmtFunding(latest.funding_rate) + " funding";
-    } else {
-      hlBasis.textContent = coin && coin.kind === "stock" ? "tokenized equity" : "no Binance pair tracked";
-      hlBasis.className = "hl-chip num muted-chip";
-      hlFund.textContent = "";
-    }
+  mount(shell,
+    h("a", { class: "back-link asset-back", href: "/", onClick: linkTo("/") }, icon("arrowLeft"), "Markets"),
+    h("section", { class: "asset-shell asset-profile-shell" },
+      h("div", { class: "asset-profile-head asset-hero" },
+        h("div", { class: "asset-identity" },
+          titleIcon,
+          h("div", { class: "asset-profile-copy" },
+            h("div", { class: "asset-breadcrumb" }, "Markets", h("span", {}, "/"), "Crypto", h("span", {}, "/"), base),
+            h("div", { class: "asset-title-row" }, titleEl, starBtn),
+            h("div", { class: "asset-chip-row" }, pairChip, liveChip))),
+        h("div", { class: "asset-quote-block" },
+          h("div", { class: "asset-source-stack" },
+            h("button", { class: "source-pill", onClick: () => setTab("quality") }, "Sources"),
+            h("a", { class: "source-pill", href: `https://www.coingecko.com/en/coins/${profileSlug(base)}`, target: "_blank", rel: "noopener noreferrer" }, "CoinGecko"),
+            h("a", { class: "source-pill", href: `https://coinmarketcap.com/currencies/${cmcSlug(base)}/`, target: "_blank", rel: "noopener noreferrer" }, "CoinMarketCap"),
+            h("a", { class: "source-pill", href: `https://www.tradingview.com/symbols/${base}USDT/`, target: "_blank", rel: "noopener noreferrer" }, "TradingView")),
+          h("div", { class: "asset-price-row" },
+            h("div", {}, h("div", {}, priceEl, quoteEl, changeEl), asOfEl))),
+        heroStats),
+      tabBar,
+      h("main", { class: "asset-main asset-workbench" },
+        marketContext,
+        h("section", { class: "asset-chart-stage" }, chartShell),
+        mainBody)));
+
+  buildTabs();
+  paintStar();
+  paintSideRail();
+  paintTerminal();
+  paintHeroStats();
+  paintMarketContext();
+  paintBody(true);
+  loadLatest();
+  loadHistory(true);
+  loadProfile();
+  loadNews();
+
+  const pollLatest = setInterval(loadLatest, 3000);
+  const pollHistory = setInterval(() => { if (chartModeOf()) loadHistory(false); }, 30000);
+  const pollProfile = setInterval(loadProfile, 120000);
+  const onResize = () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => { if (chartModeOf() && chartSrc !== "tv") drawChart(false); }, 120);
+  };
+  window.addEventListener("resize", onResize);
+  cleanups.push(() => {
+    clearInterval(pollLatest);
+    clearInterval(pollHistory);
+    clearInterval(pollProfile);
+    clearTimeout(extRetryTimer);
+    clearTimeout(resizeTimer);
+    window.removeEventListener("resize", onResize);
+  });
+  return () => cleanups.forEach((c) => c());
+
+  function chartModeOf() {
+    return (TABS.find((t) => t.id === tab) || TABS[0]).chart;
   }
 
-  // ---- tabs ----
-  const tabBar = h("div", { class: "atabs", role: "tablist" });
+  function isPriceTab() {
+    return chartModeOf() === "price";
+  }
+
+  function priceDays() {
+    return (PRICE_WINDOWS.find(([label]) => label === priceWin) || PRICE_WINDOWS[1])[1];
+  }
+
+  function isStockProfile() {
+    return !!(coin && coin.kind === "stock");
+  }
+
+  function paintStar() {
+    starBtn.replaceChildren(starIcon(isStarred(cleanSymbol)));
+  }
+
   function buildTabs() {
     mount(tabBar, TABS.map((t) =>
-      h("button", { class: "atab" + (t.id === tab ? " on" : ""), role: "tab", onClick: () => setTab(t.id) }, t.label)));
+      h("button", {
+        class: "atab" + (t.id === tab ? " on" : ""),
+        role: "tab",
+        onClick: () => setTab(t.id),
+      }, t.label)));
   }
+
   function setTab(id) {
     tab = id;
     const url = new URL(location.href);
@@ -96,416 +270,739 @@ export function renderSymbol(root, symbol) {
     paintBody(true);
   }
 
-  const chartModeOf = () => (TABS.find((t) => t.id === tab) || TABS[0]).chart;
-  const isPriceTab = () => chartModeOf() === "price";
-  const extAvailable = () => !!(coin && coin.id);
-  const isStock = () => !!(coin && coin.kind === "stock");
+  function paintHeadline() {
+    const livePrice = latest ? num(latest.spot_mid) : null;
+    const profilePrice = coin ? num(coin.price) : null;
+    const chartPrice = latestExtPrice();
+    const extMeta = latestExtMeta();
+    const px = chartPrice ?? profilePrice ?? livePrice;
+    if (px != null) countUp(priceEl, px, fmtPrice);
+    quoteEl.textContent = quote === "USDT" || quote === "USDC" ? "USD" : quote;
+    const changePct = coin && num(coin.chg24h) != null ? Number(coin.chg24h) : changeFromExt("1");
+    const abs = coin && num(coin.price_change_24h) != null ? Number(coin.price_change_24h)
+      : px != null && changePct != null ? px - px / (1 + changePct / 100) : null;
+    changeEl.className = "asset-change num " + signClass(changePct);
+    changeEl.textContent = changePct != null
+      ? `${abs != null ? fmtPrice(abs) + " " : ""}${fmtPct(changePct)}`
+      : "—";
+    const sourceLabel = extMeta
+      ? `${extMeta.provider || extMeta.source || "market"}${extMeta.interval ? " · " + extMeta.interval : ""}`
+      : coin && coin.profile_source ? coin.profile_source
+      : latest ? "local exchange snapshot"
+      : "metadata loading";
+    const pointCount = extMeta ? (Array.isArray(extMeta.prices) ? extMeta.prices.length : num(extMeta.raw_points)) : null;
+    const age = extMeta ? `${pointCount || "market"} points`
+      : latest ? `snapshot updated ${fmtAge(latest.age_seconds)} ago`
+      : "server cache";
+    asOfEl.textContent = `As of now · price from ${sourceLabel} · ${age}`;
+    liveChip.className = "asset-live-chip " + (chartPrice != null || latest ? "ok" : "warn");
+    liveChip.replaceChildren(h("span", { class: "dot" }), chartPrice != null ? "Exchange chart live" : latest ? "Live exchange pair" : "External profile only");
+    paintHeroStats();
+    paintMarketContext();
+  }
 
-  // ---- chart shell ----
-  const winSeg = h("div", { class: "win" });
-  const seriesSeg = h("div", { class: "seg", style: { display: "none" } });
-  const srcSeg = h("div", { class: "seg", style: { display: "none" } });
-  const chartMeta = h("div", { class: "chart-meta" });
-  const chartBody = h("div", { class: "chart-body" });
-  const chartShell = h("div", { class: "chart-shell" },
-    h("div", { class: "chart-head" }, seriesSeg, srcSeg, chartMeta, h("div", { class: "spacer" }), winSeg),
-    chartBody);
+  function statPill(label, value, cls = "") {
+    return h("div", { class: "asset-stat-pair " + cls },
+      h("span", {}, label),
+      h("b", { class: "num" }, value == null || value === "" ? "—" : value));
+  }
+
+  function paintHeroStats() {
+    const vol = coin && num(coin.volume) != null ? Number(coin.volume) : null;
+    const mcap = coin && num(coin.mcap) != null ? Number(coin.mcap) : null;
+    const supply = coin && num(coin.supply) != null ? Number(coin.supply) : null;
+    const fdv = coin && num(coin.fdv) != null ? Number(coin.fdv) : null;
+    const chg7 = coin && num(coin.chg7d) != null ? Number(coin.chg7d) : changeFromExt("7");
+    const basis = latest && num(latest.mid_spread_bps) != null ? Number(latest.mid_spread_bps) : null;
+    mount(heroStats,
+      statPill("Rank", coin && coin.rank ? "#" + coin.rank : "—"),
+      statPill("Market cap", fmtMoney(mcap)),
+      statPill("24h volume", fmtMoney(vol)),
+      statPill("7d", safePct(chg7), signClass(chg7)),
+      statPill("Supply", supply != null ? `${fmtCompact(supply)} ${base}` : "—"),
+      statPill("Basis", basis == null ? "—" : `${fmtBasisVal(basis, true)} ${basisUnit()}`, signClass(basis)),
+      statPill("FDV", fmtMoney(fdv)),
+      statPill("Venue", latest ? cleanSymbol : "profile"));
+  }
+
+  function contextRow(kind, primary, secondary, value, cls = "") {
+    return h("div", { class: "asset-context-row" },
+      h("div", { class: "asset-context-kind" }, kind),
+      h("div", { class: "asset-context-copy" },
+        h("b", {}, primary),
+        h("span", {}, secondary || "—")),
+      h("div", { class: "asset-context-value num " + cls }, value == null || value === "" ? "—" : value));
+  }
+
+  function paintMarketContext() {
+    const px = latestExtPrice() ?? (coin && num(coin.price) != null ? Number(coin.price) : latest && num(latest.spot_mid));
+    const vol = coin && num(coin.volume) != null ? Number(coin.volume) : null;
+    const mcap = coin && num(coin.mcap) != null ? Number(coin.mcap) : null;
+    const turnover = vol != null && mcap ? (vol / mcap) * 100 : null;
+    const basis = latest && num(latest.mid_spread_bps) != null ? Number(latest.mid_spread_bps) : null;
+    const funding = latest && num(latest.funding_rate) != null ? Number(latest.funding_rate) : null;
+    const provider = latestExtMeta();
+    mount(marketContext,
+      h("div", { class: "asset-context-head" },
+        h("div", {},
+          h("span", {}, "Volume / exchange context"),
+          h("b", {}, latest ? `${cleanSymbol} live venue + public profile data` : "Public profile data while local venue warms")),
+        h("button", { class: "asset-context-action", type: "button", onClick: () => setTab("quality") }, "Data quality")),
+      h("div", { class: "asset-context-list" },
+        contextRow("Price", provider ? `${provider.provider || provider.source || "market"} chart` : coin && coin.profile_source ? coin.profile_source : "Latest snapshot", `Primary display in ${quote === "USDT" || quote === "USDC" ? "USD" : quote}`, px == null ? "—" : fmtPrice(px)),
+        contextRow("Liquidity", "24h traded volume", turnover == null ? "Turnover unavailable" : `${turnover.toFixed(2)}% of market cap`, fmtMoney(vol)),
+        contextRow("Exchange", latest ? "Spot/perp pair tracked" : "Local venue not tracked", latest ? `Spot ${fmtPrice(latest.spot_mid)} · Perp ${fmtPrice(latest.futures_mid)}` : "Chart remains source-backed", basis == null ? "—" : `${fmtBasisVal(basis, true)} ${basisUnit()}`, signClass(basis)),
+        contextRow("Funding", "Perpetual funding / 8h", latest ? `Feed age ${fmtAge(latest.age_seconds)}` : "No local perp snapshot", funding == null ? "—" : fmtFunding(funding), signClass(funding))));
+  }
+
+  function paintTerminal() {
+    mount(terminalRail,
+      terminalBook(),
+      terminalTicks(),
+      terminalTicket());
+  }
+
+  function terminalPanel(title, body, cls = "") {
+    return h("section", { class: "asset-terminal-panel " + cls },
+      h("div", { class: "terminal-panel-head" },
+        h("b", {}, title),
+        h("span", {}, latest ? `updated ${fmtAge(latest.age_seconds)} ago` : "warming")),
+      body);
+  }
+
+  function terminalBook() {
+    if (!latest) {
+      return terminalPanel("Book", h("div", { class: "terminal-empty" }, "Waiting for Binance top-of-book snapshot."), "terminal-book");
+    }
+    const mid = num(latest.spot_mid) || num(latest.futures_mid) || latestExtPrice();
+    const rows = [
+      { side: "ask", label: "Perp ask", px: num(latest.fut_ask), meta: "perp" },
+      { side: "ask", label: "Spot ask", px: num(latest.spot_ask), meta: "spot" },
+      { side: "mid", label: "Mid", px: mid, meta: `${fmtBasisVal(latest.mid_spread_bps, true)} ${basisUnit()}` },
+      { side: "bid", label: "Spot bid", px: num(latest.spot_bid), meta: "spot" },
+      { side: "bid", label: "Perp bid", px: num(latest.fut_bid), meta: "perp" },
+    ].filter((r) => r.px != null);
+    const maxEdge = Math.max(1, ...rows.map((r) => Math.abs((r.px || 0) - (mid || r.px || 0))));
+    return terminalPanel("Book", h("div", { class: "terminal-book-table" },
+      h("div", { class: "terminal-book-head" }, h("span", {}, "Price (USD)"), h("span", {}, "Feed"), h("span", {}, "Edge")),
+      rows.map((r) => {
+        const edge = mid != null ? r.px - mid : 0;
+        const width = Math.max(12, Math.min(100, Math.abs(edge) / maxEdge * 100));
+        return h("div", { class: "terminal-book-row " + r.side },
+          h("span", { class: "book-bg", style: { "--w": width + "%" } }),
+          h("span", { class: "num px" }, fmtPrice(r.px)),
+          h("span", {}, r.meta),
+          h("span", { class: "num" }, edge ? fmtBps((edge / r.px) * 10000) + " bps" : "mid"));
+      }),
+      h("div", { class: "terminal-book-foot" }, "Top book only · full depth is not stored by this app.")), "terminal-book");
+  }
+
+  function terminalTicks() {
+    const rows = history.slice(-16).reverse();
+    if (!rows.length) return terminalPanel("Tape", terminalMarketTape(), "terminal-trades");
+    return terminalPanel("Tape", h("div", { class: "terminal-trade-list" },
+      rows.map((r, i) => {
+        const next = rows[i + 1];
+        const px = num(r.spot_mid);
+        const prev = next ? num(next.spot_mid) : null;
+        const cls = prev == null || px == null ? "" : px >= prev ? "bid" : "ask";
+        return h("div", { class: "terminal-trade-row " + cls },
+          h("span", { class: "num" }, px == null ? "—" : fmtPrice(px)),
+          h("span", { class: "num" }, fmtBasisVal(r.mid_spread_bps, true)),
+          h("span", { class: "num" }, fmtTimeShort(r.ts_ms)));
+      })), "terminal-trades");
+  }
+
+  function terminalMarketTape() {
+    const rows = ((store.lite && store.lite.ticker) || []).filter((r) => r && r.symbol).slice(0, 16);
+    if (!rows.length) return h("div", { class: "terminal-empty" }, "Recent ticks are warming from local history.");
+    return h("div", { class: "terminal-trade-list" },
+      rows.map((r) => h("button", { class: "terminal-trade-row " + signClass(r.mid_spread_bps), type: "button", onClick: () => navigate("/symbol/" + r.symbol) },
+        h("span", { class: "num" }, fmtPrice(r.spot_mid)),
+        h("span", { class: "num" }, fmtBasisVal(r.mid_spread_bps, true)),
+        h("span", { class: "num" }, baseOf(r.symbol)))));
+  }
+
+  function terminalTicket() {
+    const px = latestExtPrice() ?? (latest ? num(latest.spot_mid) : null);
+    return h("section", { class: "asset-terminal-panel terminal-ticket" },
+      h("div", { class: "ticket-switch" },
+        h("button", { type: "button", class: "on", disabled: true }, "Buy"),
+        h("button", { type: "button", disabled: true }, "Sell")),
+      h("div", { class: "ticket-mode" },
+        h("button", { type: "button", class: "on", disabled: true }, "Limit"),
+        h("button", { type: "button", disabled: true }, "Market"),
+        h("button", { type: "button", disabled: true }, "Conditional")),
+      ticketField("Price", px == null ? "—" : fmtPrice(px), quote === "USDT" || quote === "USDC" ? "USD" : quote),
+      ticketField("Quantity", "0", base),
+      ticketField("Order value", "0", "USD"),
+      h("button", { class: "ticket-disabled", type: "button", disabled: true }, "Read-only terminal"),
+      h("a", { class: "ticket-link", href: `https://www.binance.com/en/trade/${base}_${quote}`, target: "_blank", rel: "noopener noreferrer" }, "Open Binance", icon("arrowUpRight")),
+      h("a", { class: "ticket-link secondary", href: `https://www.tradingview.com/symbols/${base}USDT/`, target: "_blank", rel: "noopener noreferrer" }, "Open TradingView", icon("arrowUpRight")),
+      h("div", { class: "ticket-note" }, "No keys, no orders, no account access. External links open real trading venues."));
+  }
+
+  function ticketField(label, value, unit) {
+    return h("label", { class: "ticket-field" },
+      h("span", {}, label),
+      h("div", {}, h("input", { value, disabled: true }), h("b", {}, unit)));
+  }
+
+  function paintProfileHeader() {
+    const name = coin && coin.name ? coin.name : base;
+    titleIcon.replaceChildren(tokenIcon(base, 120));
+    titleEl.replaceChildren(name);
+    pairChip.replaceChildren(cleanSymbol, h("span", {}, isStockProfile() ? "Tokenized equity" : "Crypto assets"));
+    const links = Array.from(document.querySelectorAll(".asset-source-stack a"));
+    if (links[0]) links[0].href = `https://www.coingecko.com/en/coins/${profileSlug(base, coin && coin.id)}`;
+    if (links[1]) links[1].href = `https://coinmarketcap.com/currencies/${cmcSlug(base, coin && coin.id)}/`;
+  }
+
+  function paintSideRail() {
+    const about = ABOUT[base] || (coin && coin.name
+      ? `${coin.name} is tracked as a market asset in this workspace. The page shows exchange-native price history when available and labels every secondary data source.`
+      : `${base} is tracked as a market asset in this workspace. Secondary profile data appears only when a public source returns it.`);
+    const lead = bestHeadline();
+    mount(sideRail,
+      h("section", { class: "asset-side-card about-card" },
+        h("h2", {}, "About " + (coin && coin.name ? coin.name : base)),
+        h("p", {}, about),
+        h("div", { class: "asset-side-actions" },
+          h("a", { href: `https://www.tradingview.com/symbols/${base}USDT/`, target: "_blank", rel: "noopener noreferrer" }, icon("external"), "TradingView"),
+          h("a", { href: coin && coin.id ? `https://www.coingecko.com/en/coins/${coin.id}` : `https://www.binance.com/en/trade/${base}_${quote}`, target: "_blank", rel: "noopener noreferrer" }, icon("external"), coin && coin.id ? "Profile" : "Exchange"))),
+      h("section", { class: "asset-side-card now-card" },
+        h("h2", {}, "Happening now"),
+        lead
+          ? h("a", { class: "now-link", href: lead.url || "#", target: "_blank", rel: "noopener noreferrer" },
+              h("span", { class: "now-source" }, lead.domain || lead.source || "news"),
+              h("b", {}, lead.title || lead.headline),
+              h("span", {}, lead.time ? String(lead.time).replace("T", " ").replace("Z", " UTC") : "latest"))
+          : h("div", { class: "muted" }, "Asset-specific headlines are loading. Market-wide news is available in the News tab.")),
+      h("section", { class: "asset-side-card explore-card" },
+        h("h2", {}, "Keep exploring"),
+        h("p", {}, "Compare liquidity, price action, and derivative pressure against adjacent assets."),
+        h("button", { class: "asset-primary", onClick: () => setTab("stats") }, "Explore stats")));
+  }
 
   function buildChartControls() {
-    // windows
-    if (isPriceTab() && extAvailable()) {
-      mount(winSeg, EXT_WINDOWS.map(([label]) => h("button", { class: label === extWin ? "on" : "", onClick: () => {
-        extWin = label; buildChartControls(); loadExt(true);
-      } }, label)));
-    } else {
-      mount(winSeg, LOCAL_WINDOWS.map((w) => h("button", { class: w === win ? "on" : "", onClick: () => {
-        win = w; hadHistory = false; buildChartControls(); loadHistory(true);
-      } }, w)));
+    if (!chartModeOf()) return;
+    mount(chartModeSeg, isPriceTab()
+      ? PRICE_SERIES.map(([id, label]) => h("button", { class: priceSeries === id ? "on" : "", onClick: () => { priceSeries = id; drawChart(true); } }, label))
+      : [h("button", { class: "on" }, TABS.find((t) => t.id === tab)?.label || "Chart")]);
+
+    const allowTv = isPriceTab() && !isStockProfile();
+    chartSourceSeg.style.display = allowTv ? "" : "none";
+    if (allowTv) {
+      mount(chartSourceSeg,
+        h("button", { class: chartSrc === "native" ? "on" : "", onClick: () => { chartSrc = "native"; setChartSrcPref("native"); drawChart(true); } }, "Chart"),
+        h("button", { class: chartSrc === "tv" ? "on" : "", onClick: () => { chartSrc = "tv"; setChartSrcPref("tv"); drawChart(false); } }, "TradingView"));
     }
-    // price series picker (only with real external data)
-    if (isPriceTab() && extAvailable() && chartSrc === "native") {
-      seriesSeg.style.display = "";
-      mount(seriesSeg, PRICE_SERIES.map(([id, label]) => h("button", { class: id === priceSeries ? "on" : "", onClick: () => {
-        priceSeries = id; buildChartControls(); drawChart(true);
-      } }, label)));
-    } else seriesSeg.style.display = "none";
-    // chart source toggle (native SVG vs TradingView widget). Tokenized stocks
-    // stay native: their real history lives here; TV has no BINANCE pair.
-    if (isStock() && chartSrc === "tv") chartSrc = "native";
-    if (isPriceTab() && !isStock()) {
-      srcSeg.style.display = "";
-      mount(srcSeg,
-        h("button", { class: chartSrc === "native" ? "on" : "", onClick: () => { chartSrc = "native"; setChartSrcPref("native"); buildChartControls(); drawChart(true); } }, "Chart"),
-        h("button", { class: chartSrc === "tv" ? "on" : "", onClick: () => { chartSrc = "tv"; setChartSrcPref("tv"); buildChartControls(); drawChart(false); } }, "TradingView"));
-    } else srcSeg.style.display = "none";
+
+    mount(windowSeg, (isPriceTab() ? PRICE_WINDOWS : LOCAL_WINDOWS.map((w) => [w, w])).map(([label]) =>
+      h("button", {
+        class: (isPriceTab() ? priceWin === label : win === label) ? "on" : "",
+        onClick: () => {
+          if (isPriceTab()) {
+            priceWin = label;
+            loadExt(true);
+          } else {
+            win = label;
+            hadHistory = false;
+            loadHistory(true);
+          }
+          buildChartControls();
+        },
+      }, label)));
   }
 
-  // ---- series ----
-  function downsample(points, maxN) {
-    const n = points.length;
-    if (n <= maxN) return points;
-    const bucket = n / maxN;
-    const out = [];
-    for (let i = 0; i < maxN; i++) {
-      const s = Math.floor(i * bucket);
-      const e = Math.max(s + 1, Math.min(n, Math.floor((i + 1) * bucket)));
-      let tv = 0, vv = 0, c = 0;
-      for (let j = s; j < e; j++) { tv += points[j].t; vv += points[j].v; c++; }
-      if (c) out.push({ t: tv / c, v: vv / c });
-    }
-    out[out.length - 1] = points[n - 1];
-    return out;
-  }
   function localSeries() {
-    const m = chartModeOf();
-    let map;
-    if (m === "price") map = (r) => r.spot_mid;
-    else if (m === "funding") map = (r) => (r.funding_rate || 0) * 100;
-    else if (m === "spread") map = (r) => (r.spot_spread_bps || 0) + (r.futures_spread_bps || 0);
-    else map = (r) => r.mid_spread_bps || 0;
-    const pts = history.map((r) => ({ t: r.ts_ms, v: Number(map(r)) })).filter((p) => isFinite(p.v) && p.t);
-    return downsample(pts, 260);
+    const mode = chartModeOf();
+    let fn;
+    if (mode === "funding") fn = (r) => (num(r.funding_rate) || 0) * 100;
+    else if (mode === "spread") fn = (r) => (num(r.spot_spread_bps) || 0) + (num(r.futures_spread_bps) || 0);
+    else if (mode === "basis") fn = (r) => num(r.mid_spread_bps);
+    else fn = (r) => num(r.spot_mid);
+    const pts = history.map((r) => ({ t: Number(r.ts_ms), v: fn(r) }))
+      .filter((p) => Number.isFinite(p.t) && Number.isFinite(p.v));
+    if (pts.length >= 2 || !latest) return pts;
+    const v = fn(latest);
+    if (!Number.isFinite(v)) return pts;
+    const end = Number(latest.ts_ms) || Date.now();
+    const span = WINDOW_MS[win] || WINDOW_MS["1h"];
+    return [{ t: end - span, v }, { t: end, v, snapshot: true }];
   }
-  function extSeries() {
-    const days = (EXT_WINDOWS.find(([l]) => l === extWin) || EXT_WINDOWS[0])[1];
-    const data = extCache[days];
+
+  function localSourceLabel() {
+    if (history.length >= 2) return `Binance local cache · ${history.length} raw pts · ${win}`;
+    if (latest) return `Binance live snapshot · waiting for ${win} history`;
+    return "Data unavailable";
+  }
+
+  function selectedExtSeries() {
+    const data = extCache[priceDays()];
     if (!data) return null;
     const src = priceSeries === "volume" ? data.volumes : priceSeries === "mcap" ? data.mcaps : data.prices;
-    return (src || []).map(([t, v]) => ({ t, v: Number(v) })).filter((p) => isFinite(p.v));
+    return byTime(src);
   }
 
   function drawChart(animate = false) {
     if (!chartModeOf()) return;
-    // TradingView widget mode (crypto pairs only — stocks stay native)
-    if (isPriceTab() && chartSrc === "tv" && !isStock()) {
-      const tvSymbol = latest ? "BINANCE%3A" + symbol : encodeURIComponent(base + "USD");
+    buildChartControls();
+    if (isPriceTab() && chartSrc === "tv" && !isStockProfile()) {
       const theme = getTheme() === "dark" ? "dark" : "light";
+      const tvSymbol = latest ? `BINANCE%3A${cleanSymbol}` : encodeURIComponent(base + "USD");
       mount(chartBody, h("iframe", {
         src: `https://s.tradingview.com/widgetembed/?symbol=${tvSymbol}&interval=60&theme=${theme}&style=1&locale=en&hidesidetoolbar=1&symboledit=0&saveimage=0&withdateranges=1`,
-        style: { width: "100%", height: "460px", border: "0", display: "block" },
-        loading: "lazy", allow: "fullscreen",
+        style: { width: "100%", height: "500px", border: "0", display: "block" },
+        loading: "lazy",
+        allow: "fullscreen",
         title: "TradingView chart",
       }));
-      mount(chartMeta, "TradingView widget · live · binance feed");
+      chartMeta.textContent = "External chart · values not stored locally";
+      paintReturns();
       return;
     }
-    let useExt = isPriceTab() && extAvailable();
-    let series = useExt ? (extSeries() || []) : localSeries();
-    let extFellBack = false;
-    if (useExt && !series.length) {
-      // provider slow/rate-limited: fall back to local Binance history when the
-      // pair is tracked; otherwise show an honest retrying state — NEVER stuck
-      const localS = localSeries();
-      if (localS.length >= 2) { series = localS; useExt = false; extFellBack = true; }
-      else {
-        mount(chartBody, h("div", { class: "chart-empty", style: { height: "430px" } },
-          "History provider is rate-limited — retrying automatically…"));
-        mount(chartMeta, "source: coingecko · retrying every 12s");
+
+    let series = isPriceTab() ? selectedExtSeries() : localSeries();
+    const data = isPriceTab() ? extCache[priceDays()] : null;
+    if (isPriceTab() && !data) {
+      const fallback = localSeries();
+      if (fallback.length >= 2) {
+        series = fallback;
+        chartMeta.textContent = "Binance local cache · external history loading";
+      } else {
+        mount(chartBody, h("div", { class: "chart-empty", style: { height: "500px" } }, "Loading exchange chart history..."));
+        chartMeta.textContent = "Binance spot · requesting candles";
+        paintReturns();
         return;
       }
     }
-    const m = chartModeOf();
-    const up = series.length >= 2 && series[series.length - 1].v >= series[0].v;
-    winSeg.classList.remove("pos", "neg");
-    winSeg.classList.add(up ? "pos" : "neg");
-    const wide = useExt ? ["7d", "30d", "90d", "1y", "all"].includes(extWin) : ["24h", "7d", "all"].includes(win);
-    const timeFmt = wide
-      ? (t) => { const d = new Date(t); return `${["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][d.getUTCMonth()]} ${d.getUTCDate()}`; }
-      : fmtTimeShort;
-    let color = up ? "var(--up)" : "var(--down)";
-    let valueFmt, axisFmt, zeroLine = false;
-    if (m === "price") {
-      if (priceSeries === "volume" && useExt) { valueFmt = (v) => fmtMoney(v); axisFmt = fmtMoney; color = "var(--muted)"; }
-      else if (priceSeries === "mcap" && useExt) { valueFmt = (v) => fmtMoney(v); axisFmt = fmtMoney; }
-      else { valueFmt = (v) => fmtPrice(v) + (useExt ? "" : " " + quote); axisFmt = fmtPrice; }
+    if (isPriceTab() && data && (!series || series.length < 2)) {
+      mount(chartBody, h("div", { class: "chart-empty", style: { height: "500px" } },
+        priceSeries === "mcap"
+          ? "Market-cap history is unavailable from the secondary source. Price and volume remain live."
+          : "This chart series is unavailable right now."));
+      chartMeta.textContent = `${data.provider || data.source || "market data"} · ${priceSeries} unavailable`;
+      paintReturns();
+      return;
     }
-    else if (m === "funding") { valueFmt = (v) => v.toFixed(4) + "%"; axisFmt = (v) => v.toFixed(3) + "%"; zeroLine = true; color = (series.at(-1)?.v ?? 0) >= 0 ? "var(--up)" : "var(--down)"; }
-    else if (m === "spread") { valueFmt = (v) => fmtBps(v) + " bps"; axisFmt = (v) => fmtBps(v); color = "var(--muted)"; }
-    else { valueFmt = (v) => fmtBps(v, true) + " bps"; axisFmt = (v) => fmtBps(v); zeroLine = true; color = (series.at(-1)?.v ?? 0) >= 0 ? "var(--up)" : "var(--down)"; }
+    if (!series || series.length < 2) {
+      mount(chartBody, h("div", { class: "chart-empty", style: { height: "500px" } }, "No history in this window yet."));
+      chartMeta.textContent = latest ? "Binance local cache · waiting for history" : "Data unavailable";
+      paintReturns();
+      return;
+    }
+
+    const first = series[0].v;
+    const last = series[series.length - 1].v;
+    const up = last >= first;
+    const mode = chartModeOf();
+    let color = up ? "var(--up)" : "var(--down)";
+    let valueFmt = fmtPrice;
+    let axisFmt = fmtPrice;
+    let zeroLine = false;
+    if (isPriceTab() && priceSeries === "volume") {
+      valueFmt = fmtMoney; axisFmt = fmtMoney; color = "var(--accent)";
+    } else if (isPriceTab() && priceSeries === "mcap") {
+      valueFmt = fmtMoney; axisFmt = fmtMoney;
+    } else if (mode === "funding") {
+      valueFmt = (v) => v.toFixed(4) + "%"; axisFmt = (v) => v.toFixed(3) + "%"; zeroLine = true; color = last >= 0 ? "var(--up)" : "var(--down)";
+    } else if (mode === "basis") {
+      valueFmt = (v) => fmtBps(v, true) + " " + basisUnit(); axisFmt = (v) => fmtBps(v); zeroLine = true; color = last >= 0 ? "var(--up)" : "var(--down)";
+    } else if (mode === "spread") {
+      valueFmt = (v) => fmtBps(v) + " bps"; axisFmt = (v) => fmtBps(v); color = "var(--accent)";
+    }
+    const wide = isPriceTab() ? ["30d", "1y", "5y", "all"].includes(priceWin) : ["24h", "7d", "all"].includes(win);
+    const timeFmt = wide ? (t) => {
+      const d = new Date(t);
+      const m = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][d.getUTCMonth()];
+      return priceWin === "all" || priceWin === "5y" ? String(d.getUTCFullYear()) : `${m} ${d.getUTCDate()}`;
+    } : fmtTimeShort;
+
     renderChart(chartBody, series, {
       color, valueFmt, axisFmt, zeroLine, timeFmt, tipTimeFmt: fmtDateTime,
-      height: 430, dotted: true, animate,
+      height: 500, dotted: true, animate,
     });
-    if (useExt) {
-      mount(chartMeta, h("span", { class: "num" },
-        `source: coingecko · real market data · ${series.length} pts · ${extWin}`));
-    } else if (extFellBack) {
-      mount(chartMeta, h("span", { class: "num" },
-        `external history rate-limited · showing binance local (${series.length} pts) · retrying`));
+    if (isPriceTab()) {
+      const provider = data ? (data.provider || data.source || "market data") : "Binance local cache";
+      const secondary = data && data.secondary_source ? ` + ${data.secondary_source} market cap` : "";
+      chartMeta.textContent = `${provider}${secondary} · ${data?.symbol || cleanSymbol} · ${data?.interval || priceWin} · ${data?.raw_points || series.length} raw pts`;
     } else {
-      const raw = history.length;
-      const last = latest ? fmtAge(latest.age_seconds) + " ago" : "—";
-      mount(chartMeta, h("span", { class: "num" },
-        raw ? `source: binance local · ${raw} raw pts → ${series.length} plotted · updated ${last}`
-            : "no local history — Binance pair not tracked"));
+      chartMeta.textContent = localSourceLabel();
     }
+    paintReturns();
   }
 
-  // ---- panels (unchanged content, honest states) ----
-  const kv = (k, v, cls) => h("div", { class: "kv" },
-    h("div", { class: "k" }, k), h("div", { class: "v num " + (cls || "") }, v));
+  function paintReturns() {
+    const series = byTime((extCache.max || extCache["365"] || extCache[priceDays()] || {}).prices);
+    const livePct = coin && num(coin.chg24h) != null ? Number(coin.chg24h) : changeFromExt("1");
+    const values = PERIODS.map(([label, ms]) => {
+      let v = null;
+      if (label === "1 day") v = livePct;
+      else if (label === "1 week" && coin && num(coin.chg7d) != null) v = Number(coin.chg7d);
+      else if (label === "1 month" && coin && num(coin.chg30d) != null) v = Number(coin.chg30d);
+      else if (label === "1 year" && coin && num(coin.chg1y) != null) v = Number(coin.chg1y);
+      else v = pctFromSeries(series, ms);
+      return h("div", { class: "return-cell " + signClass(v) },
+        h("span", {}, label),
+        h("b", { class: "num" }, v == null ? "—" : fmtPct(v)));
+    });
+    mount(returnStrip, values);
+  }
+
+  function paintBody(animate = false) {
+    buildChartControls();
+    paintMarketContext();
+    if (chartModeOf()) {
+      mount(mainBody,
+        panelGrid(tab === "overview"
+          ? [panelAbout(), panelTradingInsights(), panelMarketStats()]
+          : tab === "price"
+            ? [panelPriceHistory(), panelMarketStats(), panelCompare()]
+            : tab === "basis"
+              ? [panelSnapshot(), panelLadder(), panelExtremes("basis")]
+              : tab === "funding"
+                ? [panelSnapshot(), panelExtremes("funding"), panelQuality()]
+                : [panelSnapshot(), panelLadder(), panelQuality()]),
+        tab === "overview" ? panelGrid([panelPerformance(), panelCompare(), panelPriceHistory()]) : null);
+      loadExt(animate);
+      drawChart(animate);
+    } else if (tab === "stats") {
+      mount(mainBody, panelGrid([panelTradingInsights(), panelMarketStats(), panelPerformance()]),
+        panelGrid([panelSnapshot(), panelNetwork(), panelQuality()]));
+    } else if (tab === "news") {
+      mount(mainBody, panelGrid([panelNews()], "single"));
+      if (!news) loadNews();
+    } else {
+      mount(mainBody, panelGrid([panelQuality(), panelSnapshot(), panelNetwork()]));
+    }
+    paintSideRail();
+  }
+
+  function panelGrid(cards, extra = "") {
+    return h("div", { class: "asset-panels asset-info-grid " + extra }, cards);
+  }
+
+  function kv(k, v, cls = "") {
+    return h("div", { class: "kv" },
+      h("div", { class: "k" }, k),
+      h("div", { class: "v num " + cls }, v == null || v === "" ? "—" : v));
+  }
+
+  function panelCard(title, kids, cls = "") {
+    return h("section", { class: "apanel asset-panel-card " + cls }, h("h3", {}, title), kids);
+  }
+
+  function panelAbout() {
+    const about = ABOUT[base] || (coin && coin.name
+      ? `${coin.name} is tracked as a market asset in this workspace. The page shows exchange-native price history when available and labels every secondary data source.`
+      : `${base} is tracked as a market asset in this workspace. Secondary profile data appears only when a public source returns it.`);
+    return panelCard("About " + (coin && coin.name ? coin.name : base),
+      h("div", { class: "asset-about-open" },
+        h("p", {}, about),
+        h("div", { class: "asset-reference-row" },
+          h("a", { href: `https://www.coingecko.com/en/coins/${profileSlug(base, coin && coin.id)}`, target: "_blank", rel: "noopener noreferrer" }, "CoinGecko profile", icon("arrowUpRight")),
+          h("a", { href: `https://coinmarketcap.com/currencies/${cmcSlug(base, coin && coin.id)}/`, target: "_blank", rel: "noopener noreferrer" }, "CoinMarketCap", icon("arrowUpRight")),
+          h("a", { href: `https://www.tradingview.com/symbols/${base}USDT/`, target: "_blank", rel: "noopener noreferrer" }, "TradingView", icon("arrowUpRight")))));
+  }
+
+  function panelTradingInsights() {
+    const chg24 = coin && num(coin.chg24h) != null ? Number(coin.chg24h) : changeFromExt("1");
+    const chg7 = coin && num(coin.chg7d) != null ? Number(coin.chg7d) : changeFromExt("7");
+    const vol = coin && num(coin.volume) != null ? Number(coin.volume) : null;
+    const mcap = coin && num(coin.mcap) != null ? Number(coin.mcap) : null;
+    const turnover = vol != null && mcap ? (vol / mcap) * 100 : null;
+    const pressure = chg24 == null ? null : Math.max(0, Math.min(100, 50 + chg24 * 4));
+    const gauge = h("div", { class: "asset-gauge", style: { "--gauge": `${pressure == null ? 50 : pressure}%` } },
+      h("div", {},
+        h("b", { class: "num " + signClass(chg24) }, safePct(chg24)),
+        h("span", {}, "24h momentum")));
+    return panelCard("Trading insights",
+      h("div", { class: "asset-insight-grid" },
+        gauge,
+        kv("24h move", safePct(chg24), signClass(chg24)),
+        kv("7d move", safePct(chg7), signClass(chg7)),
+        kv("24h volume", fmtMoney(vol)),
+        kv("Volume / mcap", turnover == null ? "—" : `${turnover.toFixed(2)}%`),
+        kv("Rank", coin && coin.rank ? "#" + coin.rank : "—")));
+  }
 
   function panelMarketStats() {
-    const grid = h("div", { class: "kv-grid" });
-    if (!coin) mount(grid, h("div", { class: "muted" }, "External sources have no profile for this asset."));
-    else mount(grid,
-      kv("Market cap", fmtMoney(coin.mcap)), kv("24h volume", fmtMoney(coin.volume)),
-      kv("Rank", "#" + (coin.rank ?? "—")),
-      kv("Circulating", coin.supply != null ? fmtCompact(coin.supply) + " " + base : "—"),
-      kv("ATH", fmtPrice(coin.ath)), kv("From ATH", coin.ath_change_pct != null ? fmtPct(coin.ath_change_pct) : "—", signClass(coin.ath_change_pct)));
-    return h("section", { class: "apanel" }, h("h3", {}, "Market stats"), grid);
+    return panelCard("Market stats", h("div", { class: "kv-grid" },
+      kv("Market cap", fmtMoney(coin && coin.mcap)),
+      kv("FDV", fmtMoney(coin && coin.fdv)),
+      kv("Circ. supply", coin && coin.supply != null ? `${fmtCompact(coin.supply)} ${base}` : "—"),
+      kv("Max supply", coin && coin.max_supply != null ? `${fmtCompact(coin.max_supply)} ${base}` : coin && coin.total_supply != null ? `${fmtCompact(coin.total_supply)} ${base}` : "—"),
+      kv("Total supply", coin && coin.total_supply != null ? `${fmtCompact(coin.total_supply)} ${base}` : "—"),
+      kv("24h volume", fmtMoney(coin && coin.volume))));
   }
+
   function panelPerformance() {
-    const wrap = h("div", { class: "perf-chips" });
-    const chip = (label, v) => h("div", { class: "perf-chip" },
-      h("div", { class: "k" }, label),
-      h("div", { class: "v num " + signClass(v) }, v != null ? (v >= 0 ? "↗ " : "↘ ") + fmtPct(v) : "—"));
-    if (coin) mount(wrap, chip("1h", coin.chg1h), chip("24h", coin.chg24h), chip("7d", coin.chg7d), chip("30d", coin.chg30d));
-    else mount(wrap, h("div", { class: "muted" }, "No external performance data."));
-    return h("section", { class: "apanel" }, h("h3", {}, "Performance"), wrap);
+    return panelCard("Performance", h("div", { class: "kv-grid" },
+      kv("1 hour", safePct(coin && coin.chg1h), signClass(coin && coin.chg1h)),
+      kv("24 hours", safePct(coin && coin.chg24h), signClass(coin && coin.chg24h)),
+      kv("7 days", safePct(coin && coin.chg7d), signClass(coin && coin.chg7d)),
+      kv("30 days", safePct(coin && coin.chg30d), signClass(coin && coin.chg30d)),
+      kv("200 days", safePct(coin && coin.chg200d), signClass(coin && coin.chg200d)),
+      kv("1 year", safePct(coin && coin.chg1y), signClass(coin && coin.chg1y))));
   }
-  function panelAbout() {
-    const grid = h("div", { class: "kv-grid" });
-    mount(grid,
-      kv("Asset", coin ? coin.name : base),
-      kv("24h range", coin && coin.low_24h != null ? fmtPrice(coin.low_24h) + " – " + fmtPrice(coin.high_24h) : "—"),
-      kv("Total supply", coin && coin.total_supply != null ? fmtCompact(coin.total_supply) : "—"),
-      kv("Source", coin ? "CoinGecko · cached" : "Binance only"));
-    return h("section", { class: "apanel" }, h("h3", {}, "About " + base), grid);
-  }
+
   function panelSnapshot() {
-    const grid = h("div", { class: "kv-grid" });
     const r = latest;
-    if (!r) mount(grid, h("div", { class: "muted" }, "No live Binance pair for this asset."));
-    else mount(grid,
-      kv("Spot mid", fmtPrice(r.spot_mid)), kv("Perp mid", fmtPrice(r.futures_mid)),
-      kv("Basis", fmtBasisVal(r.mid_spread_bps, true) + " " + basisUnit(), signClass(r.mid_spread_bps)),
+    return panelCard("Exchange snapshot", r ? h("div", { class: "kv-grid" },
+      kv("Spot mid", fmtPrice(r.spot_mid)),
+      kv("Perp mid", fmtPrice(r.futures_mid)),
+      kv("Basis", `${fmtBasisVal(r.mid_spread_bps, true)} ${basisUnit()}`, signClass(r.mid_spread_bps)),
       kv("Funding / 8h", fmtFunding(r.funding_rate), signClass(r.funding_rate)),
-      kv("Spot spread", fmtBps(r.spot_spread_bps) + " bps"), kv("Perp spread", fmtBps(r.futures_spread_bps) + " bps"),
-      kv("Feed age", fmtAge(r.age_seconds)), kv("Score", fmtScore(r.opportunity_score)));
-    return h("section", { class: "apanel" }, h("h3", {}, "Binance snapshot"), grid);
+      kv("Spot spread", `${fmtBps(r.spot_spread_bps)} bps`),
+      kv("Perp spread", `${fmtBps(r.futures_spread_bps)} bps`),
+      kv("Feed age", fmtAge(r.age_seconds)),
+      kv("Score", fmtScore(r.opportunity_score)))
+      : h("div", { class: "asset-empty" }, "This asset is not in the local Binance spot/perp radar yet. Price history can still come from the exchange or public profile source."));
   }
+
   function panelLadder() {
-    const wrap = h("div", { class: "ladder" });
     const r = latest;
-    if (!r) mount(wrap, h("div", { class: "muted", style: { padding: "8px 0" } }, "No order data."));
-    else {
-      const lrow = (k, v, side, w) => h("div", { class: "ladder-row" },
-        h("span", { class: "bar " + side, style: { width: w + "%" } }),
-        h("span", { class: "k" }, k), h("span", { class: "v num" }, v));
-      mount(wrap,
-        lrow("Perp ask", fmtPrice(r.fut_ask), "ask", 58), lrow("Perp bid", fmtPrice(r.fut_bid), "ask", 40),
-        h("div", { class: "ladder-mid" }, fmtBasisVal(r.mid_spread_bps, true) + " " + basisUnit() + " basis"),
-        lrow("Spot ask", fmtPrice(r.spot_ask), "bid", 40), lrow("Spot bid", fmtPrice(r.spot_bid), "bid", 58));
-    }
-    return h("section", { class: "apanel" }, h("h3", {}, "Basis ladder"), wrap);
+    if (!r) return panelCard("Order ladder", h("div", { class: "asset-empty" }, "No order book snapshot for this pair."));
+    const row = (label, value, side, width) => h("div", { class: "ladder-row" },
+      h("span", { class: "bar " + side, style: { width: width + "%" } }),
+      h("span", { class: "k" }, label),
+      h("span", { class: "v num" }, value));
+    return panelCard("Order ladder", h("div", { class: "ladder" },
+      row("Perp ask", fmtPrice(r.fut_ask), "ask", 62),
+      row("Perp bid", fmtPrice(r.fut_bid), "ask", 45),
+      h("div", { class: "ladder-mid" }, `${fmtBasisVal(r.mid_spread_bps, true)} ${basisUnit()} basis`),
+      row("Spot ask", fmtPrice(r.spot_ask), "bid", 45),
+      row("Spot bid", fmtPrice(r.spot_bid), "bid", 62)));
   }
+
   function panelExtremes(metric) {
-    const wrap = h("div", { class: "xlist" });
-    if (!history.length) mount(wrap, h("div", { class: "muted", style: { padding: "8px 0" } }, "No local history in this window."));
-    else {
-      let hiB = history[0], loB = history[0], hiF = history[0], loF = history[0];
-      for (const r of history) {
-        if ((r.mid_spread_bps || 0) > (hiB.mid_spread_bps || 0)) hiB = r;
-        if ((r.mid_spread_bps || 0) < (loB.mid_spread_bps || 0)) loB = r;
-        if ((r.funding_rate || 0) > (hiF.funding_rate || 0)) hiF = r;
-        if ((r.funding_rate || 0) < (loF.funding_rate || 0)) loF = r;
-      }
-      const xrow = (k, ts, v, cls) => h("div", { class: "xrow" },
-        h("div", {}, h("div", { class: "k" }, k), h("div", { class: "t num" }, fmtTimeShort(ts) + " UTC")),
-        h("span", { class: "v num " + cls }, v));
-      const rows = metric === "funding"
-        ? [xrow("Peak funding", hiF.ts_ms, fmtFunding(hiF.funding_rate), "up"),
-           xrow("Trough funding", loF.ts_ms, fmtFunding(loF.funding_rate), "down")]
-        : [xrow("Widest basis", hiB.ts_ms, fmtBps(hiB.mid_spread_bps, true) + " bps", "up"),
-           xrow("Deepest basis", loB.ts_ms, fmtBps(loB.mid_spread_bps, true) + " bps", "down"),
-           xrow("Peak funding", hiF.ts_ms, fmtFunding(hiF.funding_rate), "up"),
-           xrow("Trough funding", loF.ts_ms, fmtFunding(loF.funding_rate), "down")];
-      mount(wrap, rows);
+    if (!history.length) return panelCard("Recent extremes", h("div", { class: "asset-empty" }, "No local history in this window."));
+    let hiB = history[0], loB = history[0], hiF = history[0], loF = history[0];
+    for (const r of history) {
+      if ((num(r.mid_spread_bps) || 0) > (num(hiB.mid_spread_bps) || 0)) hiB = r;
+      if ((num(r.mid_spread_bps) || 0) < (num(loB.mid_spread_bps) || 0)) loB = r;
+      if ((num(r.funding_rate) || 0) > (num(hiF.funding_rate) || 0)) hiF = r;
+      if ((num(r.funding_rate) || 0) < (num(loF.funding_rate) || 0)) loF = r;
     }
-    return h("section", { class: "apanel" }, h("h3", {}, "Recent extremes"), wrap);
+    const xrow = (k, ts, v, cls) => h("div", { class: "xrow" },
+      h("div", {}, h("div", { class: "k" }, k), h("div", { class: "t num" }, fmtTimeShort(ts) + " UTC")),
+      h("span", { class: "v num " + cls }, v));
+    const rows = metric === "funding"
+      ? [xrow("Peak funding", hiF.ts_ms, fmtFunding(hiF.funding_rate), "up"),
+         xrow("Trough funding", loF.ts_ms, fmtFunding(loF.funding_rate), "down")]
+      : [xrow("Widest basis", hiB.ts_ms, `${fmtBps(hiB.mid_spread_bps, true)} bps`, "up"),
+         xrow("Deepest basis", loB.ts_ms, `${fmtBps(loB.mid_spread_bps, true)} bps`, "down"),
+         xrow("Peak funding", hiF.ts_ms, fmtFunding(hiF.funding_rate), "up"),
+         xrow("Trough funding", loF.ts_ms, fmtFunding(loF.funding_rate), "down")];
+    return panelCard("Recent extremes", h("div", { class: "xlist" }, rows));
   }
+
   function panelPriceHistory() {
-    const wrap = h("div", { class: "xlist" });
-    const days = (EXT_WINDOWS.find(([l]) => l === extWin) || EXT_WINDOWS[0])[1];
-    const ext = extCache[days];
-    const src = ext && ext.prices && ext.prices.length >= 2
-      ? ext.prices.map(([t, v]) => ({ t, v }))
-      : history.map((r) => ({ t: r.ts_ms, v: r.spot_mid })).filter((p) => p.v > 0);
-    const pts = downsample(src, 12);
-    if (pts.length < 2) mount(wrap, h("div", { class: "muted", style: { padding: "8px 0" } }, "Not enough points."));
-    else mount(wrap, pts.slice().reverse().map((p, i, arr) => {
+    const series = byTime((extCache[priceDays()] || {}).prices).slice(-12);
+    if (series.length < 2) return panelCard("Price history", h("div", { class: "asset-empty" }, "Price history is loading from the chart provider."));
+    return panelCard("Price history", h("div", { class: "xlist" }, series.slice().reverse().map((p, i, arr) => {
       const prev = arr[i + 1];
-      const d = prev ? ((p.v - prev.v) / prev.v) * 100 : null;
+      const d = prev && prev.v ? ((p.v - prev.v) / prev.v) * 100 : null;
       return h("div", { class: "xrow" },
         h("div", {}, h("div", { class: "k num" }, fmtPrice(p.v)), h("div", { class: "t num" }, fmtDateTime(p.t))),
-        h("span", { class: "v num " + signClass(d) }, d != null ? fmtPct(d) : "—"));
-    }));
-    return h("section", { class: "apanel" }, h("h3", {}, "Price history"), wrap);
+        h("span", { class: "v num " + signClass(d) }, d == null ? "—" : fmtPct(d)));
+    })));
   }
+
+  function panelCompare() {
+    const rows = comparableRows().slice(0, 5);
+    if (!rows.length) return panelCard("Compare with " + base, h("div", { class: "asset-empty" }, "Comparable live rows are unavailable."));
+    return panelCard("Compare with " + base, h("div", { class: "compare-grid" }, rows.map((r) => {
+      const b = baseOf(r.symbol);
+      return h("button", { class: "compare-card", onClick: () => navigate(`/symbol/${r.symbol}`) },
+        tokenIcon(b, 30),
+        h("div", {}, h("b", {}, r.symbol), h("span", {}, b)),
+        h("div", { class: "num" }, fmtPrice(r.spot_mid)),
+        h("div", { class: "num " + signClass(r.mid_spread_bps) }, `${fmtBasisVal(r.mid_spread_bps, true)} ${basisUnit()}`));
+    })));
+  }
+
+  function panelNetwork() {
+    const rows = base === "BTC"
+      ? [["Network", "Bitcoin"], ["Address", "Native BTC address"], ["Supply model", "21M max supply"], ["Contracts", "Not applicable"]]
+      : base === "ETH"
+        ? [["Network", "Ethereum"], ["Address", "Native ETH address"], ["Supply model", "Protocol issuance"], ["Contracts", "ERC-20 ecosystem"]]
+        : [["Network", "Provider profile"], ["Address", "Not stored"], ["Contracts", "Not verified"], ["Source", coin && coin.id ? "CoinGecko profile" : "Unavailable"]];
+    return panelCard("Network & addresses", h("div", { class: "xlist" }, rows.map(([k, v]) =>
+      h("div", { class: "xrow" }, h("div", {}, h("div", { class: "k" }, k), h("div", { class: "t" }, v)), h("span", { class: "copy-dot" }, "·")))));
+  }
+
   function panelNews() {
-    const wrap = h("div", {});
-    if (!news) mount(wrap, h("div", { class: "muted" }, "Loading headlines…"));
-    else {
-      const name = (coin && coin.name || base).toLowerCase();
-      const rel = (news.items || []).filter((it) =>
-        it.title.toLowerCase().includes(name) || it.title.toUpperCase().includes(base));
-      const items = rel.length ? rel : (news.items || []);
-      if (!items.length) {
-        mount(wrap, h("div", { class: "ghost-tile" }, icon("info"),
-          h("div", {},
-            h("div", { class: "gt-title" }, "No headlines available"),
-            h("div", { class: "gt-sub" }, "News sources: RSS (Cointelegraph, Decrypt) + GDELT — all retrying. Headlines are never fabricated.")),
-          h("span", { class: "gt-badge" }, news.status || "unavailable")));
-      } else {
-        mount(wrap,
-          rel.length ? null : h("div", { class: "sec-note", style: { marginBottom: "10px" } },
-            "No " + base + "-specific headlines — showing market-wide news."),
-          h("div", { class: "pulse-grid" }, items.slice(0, 8).map((it) =>
-            h("a", { class: "pulse-card", href: it.url, target: "_blank", rel: "noopener noreferrer" },
-              h("div", { class: "pc-title" }, it.title),
-              h("div", { class: "pc-meta" }, h("span", {}, it.domain || "source"),
-                h("span", { class: "num" }, it.time ? it.time.replace("T", " ").replace("Z", " UTC") : ""))))));
-      }
-    }
-    return h("section", { class: "apanel", style: { borderLeft: "0", paddingLeft: "2px" } },
-      h("h3", {}, "News · " + base), wrap);
+    if (!news) return panelCard("News", h("div", { class: "asset-empty" }, "Loading headlines..."), "wide");
+    const items = relevantNews();
+    if (!items.length) return panelCard("News", h("div", { class: "asset-empty" }, "No current headline matched this asset."), "wide");
+    return panelCard("News", h("div", { class: "asset-news-list" }, items.slice(0, 12).map((it) =>
+      h("a", { href: it.url || "#", target: "_blank", rel: "noopener noreferrer", class: "asset-news-row" },
+        h("span", { class: "news-source" }, it.domain || it.source || "wire"),
+        h("b", {}, it.title || it.headline || "Untitled headline"),
+        h("span", {}, it.time ? String(it.time).replace("T", " ").replace("Z", " UTC") : "")))) , "wide");
   }
+
   function panelQuality() {
-    const grid = h("div", { class: "kv-grid" });
-    const r = latest;
-    mount(grid,
-      kv("Binance pair", r ? symbol + " · live" : "not tracked", r ? "up" : ""),
-      kv("Feed age", r ? fmtAge(r.age_seconds) : "—"),
-      kv("Snapshot age", r ? fmtAge(r.snapshot_age_seconds) : "—"),
-      kv("Status", r ? r.status : "—", r && r.status === "LIVE" ? "up" : ""),
-      kv("Combined spread", r ? fmtBps((r.spot_spread_bps || 0) + (r.futures_spread_bps || 0)) + " bps" : "—"),
-      kv("Local history pts", String(history.length)),
-      kv("External profile", coin ? "CoinGecko · cached" : "none"),
-      kv("Real chart history", extAvailable() ? "coingecko market_chart" : "unavailable"));
-    return h("section", { class: "apanel" }, h("h3", {}, "Data quality"), grid);
+    const data = extCache[priceDays()];
+    return panelCard("Data quality", h("div", { class: "kv-grid" },
+      kv("Primary chart", data ? (data.provider || data.source || "market data") : "loading"),
+      kv("Exchange pair", latest ? `${cleanSymbol} · live` : "not tracked", latest ? "up" : ""),
+      kv("Chart status", data && data.status ? data.status : data ? "live" : "loading"),
+      kv("Local history", String(history.length)),
+      kv("Profile source", coin && coin.profile_source ? coin.profile_source : coin && coin.id ? "public profile" : "none"),
+      kv("Secondary market cap", data && data.secondary_source ? data.secondary_source : "not required"),
+      kv("Feed age", latest ? fmtAge(latest.age_seconds) : "—"),
+      kv("No fake values", "enforced", "up")));
   }
 
-  // ---- tab body ----
-  const body = h("div", {});
-  function paintBody(animateChart = false) {
-    buildChartControls();
-    const rows3 = (a, b, c) => h("div", { class: "asset-panels" }, a, b, c);
-    if (chartModeOf()) {
-      const below =
-        tab === "basis" ? rows3(panelSnapshot(), panelLadder(), panelExtremes("basis"))
-        : tab === "funding" ? rows3(panelSnapshot(), panelExtremes("funding"), panelQuality())
-        : tab === "spread" ? rows3(panelSnapshot(), panelLadder(), panelQuality())
-        : tab === "price" ? rows3(panelPriceHistory(), panelPerformance(), panelMarketStats())
-        : rows3(panelMarketStats(), panelPerformance(), panelAbout()); // overview
-      const extra = tab === "overview" ? rows3(panelSnapshot(), panelLadder(), panelExtremes("basis")) : null;
-      mount(body, chartShell, below, extra);
-      if (isPriceTab() && extAvailable()) loadExt(animateChart);
-      else drawChart(animateChart);
-    } else if (tab === "stats") {
-      mount(body, rows3(panelMarketStats(), panelPerformance(), panelAbout()),
-        rows3(panelSnapshot(), panelLadder(), panelQuality()));
-    } else if (tab === "news") {
-      mount(body, h("div", { class: "asset-panels", style: { gridTemplateColumns: "1fr" } }, panelNews()));
-      if (!news) loadNews();
-    } else if (tab === "quality") {
-      mount(body, rows3(panelQuality(), panelSnapshot(), panelAbout()));
+  function comparableRows() {
+    const live = (store.lite && store.lite.live) || [];
+    const majors = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "LINK", "ADA", "HYPE", "ZEC"];
+    return live.filter((r) => r && r.symbol && r.symbol !== cleanSymbol && majors.includes(baseOf(r.symbol)));
+  }
+
+  function bestHeadline() {
+    return relevantNews()[0] || ((news && news.items || [])[0]);
+  }
+
+  function relevantNews() {
+    const items = news && news.items ? news.items : [];
+    const name = (coin && coin.name || base).toLowerCase();
+    return items.filter((it) => {
+      const t = String(it.title || it.headline || "").toLowerCase();
+      const syms = (it.matched_symbols || it.symbols_hint || []).map((x) => String(x).toUpperCase());
+      return syms.includes(base) || t.includes(base.toLowerCase()) || (name.length > 3 && t.includes(name));
+    });
+  }
+
+  function pctFromSeries(series, ageMs) {
+    if (!series || series.length < 2) return null;
+    const first = series[0];
+    const last = series[series.length - 1];
+    if (!ageMs) return first.v ? ((last.v - first.v) / first.v) * 100 : null;
+    const target = last.t - ageMs;
+    let prev = first;
+    for (const p of series) {
+      if (p.t <= target) prev = p;
+      else break;
     }
+    return prev && prev.v ? ((last.v - prev.v) / prev.v) * 100 : null;
   }
 
-  // ---- assemble ----
-  const page_ = h("div", { class: "page" },
-    h("div", { class: "container page-wide" },
-      h("a", { class: "back-link", href: "/", onClick: linkTo("/") }, icon("arrowLeft"), "Markets"),
-      h("div", { class: "detail-top" },
-        h("div", { class: "detail-id" }, iconSlot, h("div", {}, nameEl, subEl)),
-        h("div", { class: "detail-head-actions" }, srcBadges, starBtn)),
-      headline,
-      tabBar,
-      body));
-  mount(root, page_);
-  buildTabs(); paintStar(); paintBody(true);
-
-  function paintStar() { starBtn.replaceChildren(starIcon(isStarred(symbol))); }
-  function paintBadges(p) {
-    const badges = [h("span", { class: "src-badge" + (p && p.row ? " ok" : "") }, "Binance " + (p && p.row ? "live" : "n/a"))];
-    if (coin) badges.push(h("span", { class: "src-badge ok" }, "CoinGecko #" + (coin.rank ?? "—")));
-    mount(srcBadges, badges);
-  }
-  function paintProfileHeader() {
-    if (!coin) return;
-    mount(iconSlot, tokenIcon(base, 48));
-    mount(nameEl, coin.name, h("span", { class: "detail-ticker" }, base));
-    if (coin.kind === "stock") hlUnit.textContent = "USD";
-    mount(subEl, coin.kind === "stock"
-      ? `${base} · tokenized equity — on-chain token tracking the listed company`
-      : `${base}/${quote} · rank #${coin.rank ?? "—"} · Binance spot & USD-M perp`);
+  function changeFromExt(days) {
+    const series = byTime((extCache[days] || {}).prices);
+    return pctFromSeries(series, days === "1" ? 24 * 3600 * 1000 : null);
   }
 
-  // ---- data ----
+  function latestExtPrice() {
+    const keys = [priceDays(), "1", "365", "max"];
+    for (const k of keys) {
+      const pts = byTime((extCache[k] || {}).prices);
+      if (pts.length) return pts[pts.length - 1].v;
+    }
+    return null;
+  }
+
+  function latestExtMeta() {
+    const keys = [priceDays(), "1", "365", "max"];
+    for (const k of keys) {
+      const entry = extCache[k] || {};
+      const pts = byTime(entry.prices);
+      if (pts.length) return entry;
+    }
+    return null;
+  }
+
   async function loadLatest() {
     try {
-      const res = await api.symbol(symbol);
-      if (res && res.row) { latest = res.row; paintHeadline(); }
+      const res = await api.symbol(cleanSymbol);
+      profile = res;
+      if (res && res.row) latest = res.row;
+      paintHeadline();
+      paintSideRail();
+      paintTerminal();
     } catch (e) {}
   }
-  let hadHistory = false;
+
   async function loadHistory(animate = false) {
     try {
-      const res = await api.history(symbol, win);
+      const res = await api.history(cleanSymbol, win);
       history = res.rows || [];
-      if (chartModeOf() && !(isPriceTab() && (extAvailable() || chartSrc === "tv"))) {
-        drawChart(animate);
-      }
-      if (!hadHistory && history.length && chartModeOf()) { hadHistory = true; paintBody(false); }
+      if (!hadHistory && history.length) { hadHistory = true; paintBody(false); }
+      paintTerminal();
+      if (!isPriceTab() || !extCache[priceDays()]) drawChart(animate);
     } catch (e) {}
   }
-  let extRetryTimer = null;
+
   async function loadExt(animate = false) {
-    const days = (EXT_WINDOWS.find(([l]) => l === extWin) || EXT_WINDOWS[0])[1];
+    if (!isPriceTab()) return;
+    const days = priceDays();
     if (extCache[days]) { drawChart(animate); return; }
     clearTimeout(extRetryTimer);
     try {
-      const res = await api.coinHistory(base, days);
+      const res = await api.coinHistory(base, days, cleanSymbol);
       if (res && res.status === "live" && (res.prices || []).length >= 2) {
-        extCache[days] = { prices: res.prices, volumes: res.volumes, mcaps: res.mcaps };
-        // trending coins outside the top-100 have no list price — take the
-        // real last chart point so the headline is never a dash
-        if ((!coin || coin.price == null) && !latest) {
-          const last = res.prices[res.prices.length - 1];
-          if (last && isFinite(last[1])) countUp(hlVal, Number(last[1]), fmtPrice);
-        }
+        extCache[days] = {
+          status: res.status,
+          source: res.source,
+          provider: res.provider,
+          symbol: res.symbol,
+          interval: res.interval,
+          raw_points: res.raw_points,
+          secondary_source: res.secondary_source,
+          prices: res.prices || [],
+          volumes: res.volumes || [],
+          mcaps: res.mcaps || [],
+        };
+        if (!extCache.max && days !== "max") loadPeriodHistory();
+      } else if (res) {
+        extCache[days] = { status: res.status || "unavailable", source: res.source || "unavailable", prices: [], volumes: [], mcaps: [] };
       }
     } catch (e) {}
     drawChart(animate);
-    if (!extCache[days] && isPriceTab() && chartSrc !== "tv") {
-      extRetryTimer = setTimeout(() => loadExt(false), 12000);  // self-heal
+    paintHeadline();
+    if (!extCache[days] || !extCache[days].prices || extCache[days].prices.length < 2) {
+      extRetryTimer = setTimeout(() => { delete extCache[days]; loadExt(false); }, 12000);
     }
-    if (tab === "price") paintBody(false); // price-history panel uses ext data
   }
-  async function loadProfile() {
+
+  async function loadPeriodHistory() {
     try {
-      const p = await api.coinProfile(symbol);
-      const hadCoin = !!coin;
-      if (p && p.coin) { coin = p.coin; paintProfileHeader(); paintHeadline(); }
-      paintBadges(p);
-      // first profile load unlocks real chart history → rebuild chart controls
-      if (!hadCoin && coin && isPriceTab()) paintBody(true);
-      else if (!hadCoin && coin) paintBody(false);
+      const res = await api.coinHistory(base, "max", cleanSymbol);
+      if (res && res.status === "live" && (res.prices || []).length >= 2) {
+        extCache.max = {
+          status: res.status, source: res.source, provider: res.provider,
+          symbol: res.symbol, interval: res.interval, raw_points: res.raw_points,
+          secondary_source: res.secondary_source, prices: res.prices || [], volumes: res.volumes || [], mcaps: res.mcaps || [],
+        };
+        paintReturns();
+      }
     } catch (e) {}
   }
-  async function loadNews() {
-    try { news = await api.newsContext(); if (tab === "news") paintBody(false); } catch (e) {}
+
+  async function loadProfile() {
+    try {
+      const p = await api.coinProfile(cleanSymbol);
+      profile = p;
+      if (p && p.coin) {
+        coin = p.coin;
+        paintProfileHeader();
+      }
+      paintHeadline();
+      paintSideRail();
+      paintHeroStats();
+      paintMarketContext();
+      paintBody(false);
+    } catch (e) {}
   }
 
-  loadLatest(); loadHistory(true); loadProfile();
-  const t1 = setInterval(loadLatest, 3000);
-  const t2 = setInterval(() => { if (chartModeOf()) loadHistory(false); }, 30000);
-  const t3 = setInterval(loadProfile, 120000);
-  let rz;
-  const onResize = () => { clearTimeout(rz); rz = setTimeout(() => { if (chartModeOf() && chartSrc !== "tv") drawChart(false); }, 120); };
-  window.addEventListener("resize", onResize);
-  cleanups.push(() => { clearInterval(t1); clearInterval(t2); clearInterval(t3); clearTimeout(extRetryTimer); window.removeEventListener("resize", onResize); });
-
-  return () => cleanups.forEach((c) => c());
+  async function loadNews() {
+    try {
+      news = await api.newsContext(60);
+      paintSideRail();
+      if (tab === "news") paintBody(false);
+    } catch (e) {}
+  }
 }

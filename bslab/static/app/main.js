@@ -5,7 +5,7 @@ import { buildHeader } from "./ui/header.js";
 import { openCommand, wireCommandHotkey } from "./ui/command.js";
 import { openDataSheet } from "./ui/drawer.js";
 import { buildHealthBadge } from "./ui/health.js";
-import { onRoute, currentRoute, startPolling, navigate, linkTo } from "./lib/store.js";
+import { onRoute, currentRoute, startPolling, linkTo } from "./lib/store.js";
 import { getSettings, onSettings, applyMotion } from "./lib/settings.js";
 import { setDisplayCurrency } from "./lib/format.js";
 import { loadIconManifest } from "./lib/icons.js";
@@ -14,6 +14,7 @@ import { renderMarket } from "./screens/market.js";
 import { renderRadar } from "./screens/radar.js";
 import { renderSymbol } from "./screens/symbol.js";
 import { renderHeatmap } from "./screens/heatmap.js";
+import { renderBubbles } from "./screens/bubbles.js";
 import { renderFunding } from "./screens/funding.js";
 import { renderMovers } from "./screens/movers.js";
 
@@ -43,7 +44,8 @@ const footer = h("footer", { class: "footer" },
           "keyless public data, never fabricated.")),
       h("div", { class: "ftr-col" },
         h("div", { class: "ftr-h" }, "Product"),
-        fLink("Market", "/"), fLink("Radar", "/radar"), fLink("Heatmap", "/heatmap"),
+        fLink("Market", "/"), fLink("World indices", "/?sec=world"), fLink("Radar", "/radar"), fLink("Heatmap", "/heatmap"),
+        fLink("Bubbles", "/bubbles"),
         fLink("Funding", "/funding"), fLink("Movers", "/movers")),
       h("div", { class: "ftr-col" },
         h("div", { class: "ftr-h" }, "Data sources"),
@@ -76,6 +78,7 @@ const SCREENS = {
   market: renderMarket,
   radar: renderRadar,
   heatmap: renderHeatmap,
+  bubbles: renderBubbles,
   funding: renderFunding,
   movers: renderMovers,
 };
@@ -91,9 +94,13 @@ function route() {
 
 onRoute(route);
 route();
+// Mark the app alive immediately after first paint. Optional network/icon work
+// below must not make the shell report a failed boot after the UI renders.
+window.__CG_BOOTED__ = true;
+if (window.__CG_BOOT_WATCHDOG__) clearTimeout(window.__CG_BOOT_WATCHDOG__);
 wireCommandHotkey();
 startPolling();
-loadIconManifest();
+try { loadIconManifest(); } catch (e) {}
 
 // Apply the persisted display currency once live FX rates are known; on
 // change, re-render the current screen so every price updates immediately.
@@ -108,9 +115,8 @@ async function applyCurrency(rerender) {
   }
   if (rerender) route();
 }
-applyCurrency(false);
-onSettings((_, key) => { if (key === "currency" || key === "*") applyCurrency(true); });
-
-// Tell the shell's boot watchdog we are alive (see web_static.py fallback).
-window.__CG_BOOTED__ = true;
-if (window.__CG_BOOT_WATCHDOG__) clearTimeout(window.__CG_BOOT_WATCHDOG__);
+applyCurrency(true);
+onSettings((_, key) => {
+  if (key === "currency" || key === "*") applyCurrency(true);
+  else if (key === "richIcons" || key === "source") route();
+});

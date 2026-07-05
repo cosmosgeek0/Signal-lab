@@ -35,3 +35,17 @@ async def get_common_symbols(limit: int | None = None, quote: str = DEFAULT_QUOT
     if limit:
         common = common[:limit]
     return common
+
+
+async def get_common_symbol_coverage(quote: str = DEFAULT_QUOTE) -> dict:
+    async with aiohttp.ClientSession() as session:
+        spot, fut = await get_spot_usdt_symbols(session, quote), await get_futures_usdt_symbols(session, quote)
+    common = sorted(spot & fut)
+    return {
+        "ok": True,
+        "quote": quote,
+        "spot_count": len(spot),
+        "futures_count": len(fut),
+        "common_count": len(common),
+        "symbols": common,
+    }

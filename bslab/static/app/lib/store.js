@@ -58,8 +58,10 @@ export function currentRoute() {
   const path = location.pathname.replace(/\/+$/, "") || "/";
   const m = path.match(/^\/symbol\/([A-Za-z0-9]+)/);
   if (m) return { name: "symbol", symbol: m[1].toUpperCase() };
+  if (path === "/world") return { name: "market" };
   if (path === "/radar") return { name: "radar" };
   if (path === "/heatmap") return { name: "heatmap" };
+  if (path === "/bubbles") return { name: "bubbles" };
   if (path === "/funding") return { name: "funding" };
   if (path === "/movers") return { name: "movers" };
   return { name: "market" };

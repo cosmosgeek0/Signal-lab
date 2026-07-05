@@ -1,0 +1,43 @@
+# PHOTO QUEUE — one photo per run, top-most non-[x] first. Never two in one run.
+# Photos live at the WORKSPACE level: ../example photos/ (shared by both projects)
+
+- [x] 1password-manage-account-REFERENCE.png — already captured in TASTE_LOG ENTRY #0; source file missing from allowed photo folders during this run
+- [x] Screenshot 2026-07-02 at 10.52.49 PM.png — macOS menu-bar status strip → header-right market clock: persisted UTC/IST/local cycle, all-zones hover, clock moved to far right
+- [ ] Screenshot 2026-07-02 at 10.57.02 PM.png
+- [ ] Screenshot 2026-07-02 at 10.57.23 PM.png
+- [ ] Screenshot 2026-07-02 at 10.57.32 PM.png
+- [ ] Screenshot 2026-07-02 at 10.57.42 PM.png
+- [ ] Screenshot 2026-07-02 at 10.57.54 PM.png
+- [ ] Screenshot 2026-07-02 at 10.58.02 PM.png
+- [ ] Screenshot 2026-07-02 at 10.58.37 PM.png
+- [ ] Screenshot 2026-07-02 at 10.58.50 PM.png
+- [ ] Screenshot 2026-07-02 at 10.59.00 PM.png
+- [ ] Screenshot 2026-07-03 at 1.25.03 AM.png
+- [ ] Screenshot 2026-07-03 at 12.42.52 AM 2.png
+- [ ] Screenshot 2026-07-04 at 3.44.28 AM.png
+- [ ] Screenshot 2026-07-04 at 3.45.20 AM.png
+- [ ] Screenshot 2026-07-04 at 3.46.14 AM.png
+- [ ] Screenshot 2026-07-04 at 3.47.23 AM.png
+- [ ] Screenshot 2026-07-04 at 3.47.36 AM.png
+- [ ] Screenshot 2026-07-04 at 3.47.51 AM.png
+- [ ] Screenshot 2026-07-04 at 3.50.14 AM.png
+- [ ] Screenshot 2026-07-04 at 3.50.26 AM.png
+- [ ] Screenshot 2026-07-04 at 3.50.38 AM.png
+- [ ] Screenshot 2026-07-04 at 3.50.50 AM.png
+- [ ] Screenshot 2026-07-04 at 3.51.06 AM.png
+- [ ] Screenshot 2026-07-04 at 3.51.20 AM.png
+- [ ] Screenshot 2026-07-04 at 3.51.39 AM.png
+- [ ] Screenshot 2026-07-04 at 3.51.48 AM.png
+- [ ] Screenshot 2026-07-04 at 3.52.46 AM.png
+- [ ] Screenshot 2026-07-04 at 3.53.03 AM.png
+- [ ] Screenshot 2026-07-04 at 3.53.21 AM.png
+- [ ] Screenshot 2026-07-04 at 3.53.32 AM.png
+- [ ] Screenshot 2026-07-04 at 3.53.41 AM.png
+- [ ] Screenshot 2026-07-04 at 3.54.01 AM.png
+- [ ] Screenshot 2026-07-04 at 4.02.39 AM.png
+- [ ] Screenshot 2026-07-04 at 4.05.09 AM.png
+- [ ] Screenshot 2026-07-04 at 4.09.38 AM.png
+- [ ] Screenshot 2026-07-04 at 4.11.24 AM.png
+- [ ] Screenshot 2026-07-04 at 4.22.07 AM.png
+- [ ] Screenshot 2026-07-04 at 4.36.14 AM.png
+- [x] Screenshot 2026-07-04 at 4.36.32 AM.png — Backpack trading surface → market atlas: stat discipline (label-over-value), hairline panels, watermark purge, theme-correct chart

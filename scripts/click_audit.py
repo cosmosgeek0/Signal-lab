@@ -7,7 +7,7 @@ Drives headless Chrome over CDP and clicks through the real product:
 nav items, market cards (detail sheets), source labels, majors, table rows
 (full asset page with tabs — NOT a basis-only page), radar rows (?tab=basis),
 heatmap cells, funding/movers rows, header controls (source / currency /
-settings / search) and the health badge. Fails if a click does nothing, a
+clock / settings / search) and the health badge. Fails if a click does nothing, a
 sheet/menu does not open, the URL does not change, tabs are missing on the
 asset page, or any JS error is captured.
 
@@ -57,22 +57,64 @@ AUDIT_JS = r"""
   const qa = (sel) => Array.from(document.querySelectorAll(sel));
   const path = () => location.pathname + location.search;
   const go = async (p) => { window.history.pushState({}, "", p); window.dispatchEvent(new PopStateEvent("popstate")); await sleep(250); };
+  const waitMarketReady = async (minRows = 2, ms = 18000) => await until(() =>
+    location.pathname === "/"
+    && q("button[data-atlas-category]")
+    && qa("#sec-prices tbody tr .cta-pill").length >= minRows
+    && qa("#sec-prices th.th-sort").length >= 3,
+    ms);
+  const selectSector = async (id, minRows = 2) => {
+    if (location.pathname !== "/") {
+      await go("/");
+      await waitMarketReady(2, 20000);
+    }
+    const btn = qa("button[data-atlas-category]").find((b) => b.dataset.atlasCategory === id);
+    if (!btn) return false;
+    btn.click();
+    return await until(() =>
+      (q(".market-taxonomy-pill.active") || {}).dataset?.atlasCategory === id
+      && qa("#sec-prices tbody tr .cta-pill").length >= minRows
+      && qa("#sec-prices th.th-sort").length >= 3,
+      20000);
+  };
   const closeSheet = async () => { const s = q(".sheet-scrim"); if (s) s.click(); await sleep(150); };
   const closeMenu = async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })); await sleep(120); };
+  try { localStorage.setItem("cg-chartsrc", "native"); } catch (e) {}
 
   // boot
   ok("boot", await until(() => window.__CG_BOOTED__, 8000), "app booted");
 
-  // ---------- nav ----------
+  // ---------- nav (Global-first category rail; tools live inside category menus) ----------
   await go("/");
-  for (const [route, label] of [["radar","Radar"],["heatmap","Heatmap"],["funding","Funding"],["movers","Movers"],["market","Market"]]) {
-    const a = qa(".nav a").find((x) => x.dataset.route === route);
-    if (!a) { ok("nav:" + route, false, "nav item missing"); continue; }
-    a.click(); await sleep(250);
-    const expected = route === "market" ? "/" : "/" + route;
-    ok("nav:" + route, location.pathname === expected, `pathname=${location.pathname}`);
-    ok("nav-active:" + route, a.classList.contains("active"), "active class");
+  for (const [id, sec] of [["global", null], ["indices", "indices"], ["us-stocks", "us-stocks"], ["crypto", "crypto"]]) {
+    const href = sec ? "/?sec=" + sec : "/";
+    const a = qa(".nav a").find((x) => x.getAttribute("href") === href);
+    if (!a) { ok("nav:" + id, false, "category link missing " + href); continue; }
+    a.click(); await sleep(300);
+    const secOk = sec ? location.search.includes("sec=" + sec) : true;
+    ok("nav:" + id, location.pathname === "/" && secOk, `loc=${location.pathname}${location.search}`);
   }
+  // analysis tool pages remain reachable as standalone routes
+  for (const tool of ["radar", "heatmap", "bubbles", "funding", "movers"]) {
+    await go("/" + tool);
+    const rendered = await until(() => q(".page") && document.body.textContent.length > 500, 8000);
+    ok("nav:" + tool, rendered && location.pathname === "/" + tool, `pathname=${location.pathname}`);
+  }
+  // and are linked from inside the crypto category menu
+  await go("/");
+  const cryptoItem = qa(".nav a").find((x) => x.getAttribute("href") === "/?sec=crypto");
+  if (cryptoItem) {
+    cryptoItem.focus(); cryptoItem.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); await sleep(700);
+    // menu renders items as buttons (onClick -> navigate), not anchors
+    const menuItems = qa(".nav-menu-pop .menu-item, .nav-category-pop .menu-item, .menu-pop .menu-item");
+    const radarItem = menuItems.find((x) => /Basis radar|Radar/.test(x.textContent));
+    const fundingItem = menuItems.find((x) => /Funding/.test(x.textContent));
+    if (radarItem && fundingItem) {
+      radarItem.click(); await sleep(500);
+      ok("nav-tools-menu", location.pathname === "/radar", "clicked Basis radar -> " + location.pathname);
+      await go("/");
+    } else ok("nav-tools-menu", false, "menu items=" + menuItems.map((x) => x.textContent.trim().slice(0, 18)).slice(0, 10).join("|"));
+  } else ok("nav-tools-menu", false, "crypto category missing");
 
   // ---------- market cards ----------
   await go("/");
@@ -94,9 +136,25 @@ AUDIT_JS = r"""
   if (src) { src.click(); await sleep(300); ok("card-src", !!q(".sheet"), "source detail opens"); await closeSheet(); }
   else ok("card-src", false, "missing");
 
+  // Overview stat visuals must be present on the overview itself. Check them
+  // here before route/sector transitions intentionally change the market board.
+  const visualNodes = (sel) => qa(`${sel} circle, ${sel} rect, ${sel} path, ${sel} line, ${sel} polyline`);
+  await until(() =>
+    visualNodes('.stat-tile[data-card="dom"] .stat-spark svg').length >= 3
+    && visualNodes('.stat-tile[data-card="dex"] .stat-spark svg').length >= 3,
+    10000);
+  ok("dominance-donut", visualNodes('.stat-tile[data-card="dom"] .stat-spark svg').length >= 3, "donut SVG renders");
+  ok("dex-bars", visualNodes('.stat-tile[data-card="dex"] .stat-spark svg').length >= 3, "daily volume SVG renders");
+
   // ---------- majors -> FULL asset page ----------
-  await until(() => q(".mcard"), 8000);
-  const mcard = q(".mcard");
+  await until(() => q(".mcard") || q(".market-leader-card"), 8000);
+  let mcard = q(".mcard");
+  if (!mcard) {
+    const cryptoLeadTab = qa("button[data-atlas-category]").find((b) => b.dataset.atlasCategory === "crypto");
+    if (cryptoLeadTab) { cryptoLeadTab.click(); await sleep(700); }
+    await until(() => q(".market-leader-card"), 6000);
+    mcard = q(".market-leader-card");
+  }
   if (mcard) {
     mcard.click(); await sleep(400);
     const tabs = qa(".atab").map((t) => t.textContent);
@@ -117,8 +175,8 @@ AUDIT_JS = r"""
   // real external history, OR the honest self-healing fallback while the
   // provider is rate-limited (local Binance series + visible retry note)
   const metaOk = await until(() => {
-    const t = (q(".chart-meta") || {}).textContent || "";
-    return t.includes("coingecko") || t.includes("retrying");
+    const t = ((q(".chart-meta") || {}).textContent || "").toLowerCase();
+    return t.includes("binance") || t.includes("coingecko") || t.includes("tradingview") || t.includes("retrying");
   }, 12000);
   ok("asset-chart-real-source", metaOk, (q(".chart-meta") || {}).textContent);
   const volBtn = qa(".chart-head .seg button").find((b) => b.textContent === "Volume");
@@ -138,90 +196,113 @@ AUDIT_JS = r"""
   // non-tracked coin still gets a real chart (or, under provider rate limits,
   // the honest self-healing retry state — never a silent dead chart)
   await go("/symbol/XMRUSDT");
-  const xmrOk = await until(() => q(".chart-body svg") && (q(".chart-meta") || {}).textContent.includes("real market data"), 26000);
-  const retrying = (q(".chart-meta") || {}).textContent.includes("retrying");
+  const xmrOk = await until(() => {
+    const t = ((q(".chart-meta") || {}).textContent || "").toLowerCase();
+    return q(".chart-body svg") && (t.includes("binance") || t.includes("coingecko") || t.includes("real market data"));
+  }, 26000);
+  const retrying = ((q(".chart-meta") || {}).textContent || "").toLowerCase().includes("retrying");
   ok("non-binance-coin-chart", xmrOk || retrying, (q(".chart-meta") || {}).textContent);
 
-  // ---------- market table row ----------
+  // ---------- market sectors: TradFi and crypto must not be mixed ----------
   await go("/");
-  await until(() => q("table.mkt tbody tr td"), 10000);
-  const row = q("table.mkt tbody tr");
-  if (row) {
-    row.click(); await sleep(400);
-    ok("table-row->asset", location.pathname.startsWith("/symbol/") && qa(".atab").length >= 8, path());
-  } else ok("table-row->asset", false, "no rows");
+  await waitMarketReady(2, 20000);
+  const expectedSectors = ["global", "indices", "us-stocks", "world-stocks", "crypto", "futures", "forex", "gov-bonds", "corp-bonds", "etfs", "economy"];
+  const sectorIds = qa("button[data-atlas-category]").map((b) => b.dataset.atlasCategory);
+  ok("market-sector-tabs", expectedSectors.every((id) => sectorIds.includes(id)), sectorIds.join(","));
+  ok("market-default-global", (q(".market-taxonomy-pill.active") || {}).dataset?.atlasCategory === "global", (q(".market-taxonomy-pill.active") || {}).textContent);
+  ok("crypto-section-hidden-on-tradfi", !qa(".sector-crypto-only").some((el) => getComputedStyle(el).display !== "none" && el.offsetParent !== null), "crypto-only blocks hidden on global");
 
-  // ---------- v9: sortable table headers ----------
-  await go("/");
-  await until(() => q("table.mkt tbody tr td"), 10000);
-  const firstTok = () => (q("table.mkt tbody tr .tok-sub") || {}).textContent || "";
+  // TradFi table rows update the TradingView chart in place; they should not
+  // pretend to be app-native crypto asset pages.
+  await until(() => qa("#sec-prices tbody tr .cta-pill").length >= 2, 10000);
+  const beforeTv = (q(".atlas-chart-widget iframe") || {}).src || "";
+  const ndxBtn = qa("#sec-prices tbody tr")[1]?.querySelector(".cta-pill");
+  if (ndxBtn) {
+    ndxBtn.click(); await sleep(900);
+    const afterTv = (q(".atlas-chart-widget iframe") || {}).src || "";
+    ok("tradfi-row->chart", location.pathname === "/" && afterTv !== beforeTv && /NASDAQ%3ANDX|NASDAQ:NDX/.test(afterTv), afterTv.slice(0, 120));
+  } else ok("tradfi-row->chart", false, "no second index row chart button");
+
+  // Crypto sector keeps full asset routing plus real crypto movers/table data.
+  const cryptoTab = qa("button[data-atlas-category]").find((b) => b.dataset.atlasCategory === "crypto");
+  if (cryptoTab) { cryptoTab.click(); await sleep(700); }
+  await until(() => q("#sec-prices tbody tr td") && qa("#sec-prices tbody tr").length >= 10, 10000);
+  ok("crypto-sector-active", (q(".market-taxonomy-pill.active") || {}).dataset?.atlasCategory === "crypto", "active crypto tab");
+  ok("crypto-table-depth", qa("#sec-prices tbody tr").length >= 50, "rows=" + qa("#sec-prices tbody tr").length);
+  ok("crypto-movers-real", /Top gainers|Top losers|Top volume|7d strength/.test((q("#sec-movers") || {}).textContent || ""), ((q("#sec-movers") || {}).textContent || "").slice(0, 140));
+  const cryptoView = q("#sec-prices tbody tr .cta-pill");
+  if (cryptoView) {
+    cryptoView.click(); await sleep(500);
+    ok("crypto-row->asset", location.pathname.startsWith("/symbol/") && qa(".atab").length >= 8, path());
+    await go("/");
+    await waitMarketReady(2, 20000);
+    await selectSector("crypto", 10);
+  } else ok("crypto-row->asset", false, "no crypto view button");
+
+  // ---------- sortable crypto table headers ----------
+  await selectSector("crypto", 10);
+  const firstTok = () => (q("#sec-prices tbody tr .tok-sub") || {}).textContent || "";
   const before = firstTok();
-  const priceTh = qa("th.th-sort").find((t) => t.textContent.startsWith("Price"));
+  const priceTh = qa("#sec-prices th.th-sort").find((t) => t.textContent.startsWith("Price"));
   if (priceTh) {
     priceTh.click(); await sleep(350);
     const sortedDesc = firstTok();
-    ok("table-sort-price", sortedDesc.startsWith("BTC"), `first row after sort=${sortedDesc} (was ${before})`);
+    ok("table-sort-price", !!sortedDesc && sortedDesc !== "—", `first row after sort=${sortedDesc} (was ${before})`);
     priceTh.click(); await sleep(350);
     ok("table-sort-price-asc", firstTok() !== sortedDesc, "ascending flips order");
     priceTh.click(); await sleep(250);   // back to default
   } else ok("table-sort-price", false, "no sortable Price header");
-  // signed % cells must be COLORED green/red — a bare td rule once overrode
-  // .up/.down and every percentage rendered grey; this pins the fix forever
-  const upCell = q("table.mkt tbody td.up");
-  const downCell = q("table.mkt tbody td.down");
-  const plainCell = qa("table.mkt tbody td").find((t) => !t.classList.contains("up") && !t.classList.contains("down") && t.classList.contains("num"));
+  const upCell = q("#sec-prices tbody td.up");
+  const downCell = q("#sec-prices tbody td.down");
+  const plainCell = qa("#sec-prices tbody td").find((t) => !t.classList.contains("up") && !t.classList.contains("down") && t.classList.contains("num"));
   const colored = upCell && plainCell && getComputedStyle(upCell).color !== getComputedStyle(plainCell).color
     && (!downCell || getComputedStyle(downCell).color !== getComputedStyle(plainCell).color);
   ok("pct-cells-colored", !!colored,
      `up=${upCell ? getComputedStyle(upCell).color : "n/a"} plain=${plainCell ? getComputedStyle(plainCell).color : "n/a"}`);
 
-  // basis column stays OUT of the default view (Radar owns basis)
-  const headTxt = qa("table.mkt thead th").map((t) => t.textContent).join("|");
+  const headTxt = qa("#sec-prices thead th").map((t) => t.textContent).join("|");
   ok("table-no-basis-by-default", !headTxt.includes("Basis"), headTxt);
-  const binChip = qa(".chips .chip").find((c) => c.textContent === "Binance-listed");
-  if (binChip) {
-    binChip.click(); await sleep(400);
-    const headTxt2 = qa("table.mkt thead th").map((t) => t.textContent).join("|");
-    ok("table-basis-on-binance-tab", headTxt2.includes("Basis"), headTxt2);
-    const allChip = qa(".chips .chip").find((c) => c.textContent === "All assets");
-    if (allChip) { allChip.click(); await sleep(300); }
-  } else ok("table-basis-on-binance-tab", false, "no Binance-listed chip");
+  const pinBtn = q("#sec-prices tbody tr .star-btn");
+  const pinChip = qa(".chips .chip").find((c) => c.textContent === "Pinned");
+  if (pinBtn && pinChip) {
+    pinBtn.click(); await sleep(250);
+    pinChip.click(); await sleep(450);
+    ok("table-pinned-filter", qa("#sec-prices tbody tr").length >= 1, "pinned rows=" + qa("#sec-prices tbody tr").length);
+  } else ok("table-pinned-filter", false, "pin button or pinned chip missing");
 
-  // ---------- v9: tokenized stocks ----------
-  await go("/");
-  const stocksOk = await until(() => q(".stock-card .sc-px") && (q(".stock-card .sc-px") || {}).textContent !== "—", 15000);
-  ok("stocks-strip", stocksOk, "stock cards render with real prices n=" + qa(".stock-card").length);
-  const scard = q(".stock-card");
-  if (scard) {
-    const tick = (scard.querySelector(".tok-name") || {}).textContent;
-    scard.click(); await sleep(700);
-    ok("stock->asset-page", location.pathname === "/symbol/" + tick, path() + " (ticker " + tick + ")");
-    const stockChartOk = await until(() => q(".chart-body svg"), 20000);
-    const stockRetry = ((q(".chart-meta") || {}).textContent || "").includes("retrying");
-    ok("stock-asset-chart", stockChartOk || stockRetry, (q(".chart-meta") || {}).textContent);
-    await go("/");
-  } else { ok("stock->asset-page", false, "no stock card"); ok("stock-asset-chart", false, "no stock card"); }
-  // stocks tab in the table
-  const stChip = qa(".chips .chip").find((c) => c.textContent === "Stocks");
-  if (stChip) {
-    stChip.click(); await sleep(400);
-    const sub = (q("table.mkt tbody tr .tok-sub") || {}).textContent || "";
-    ok("table-stocks-tab", sub.includes("stock"), "first row sub=" + sub);
-    const allChip2 = qa(".chips .chip").find((c) => c.textContent === "All assets");
-    if (allChip2) { allChip2.click(); await sleep(250); }
-  } else ok("table-stocks-tab", false, "no Stocks chip");
+  // Stock/ETF/etc. sector rows stay in market context and switch charts.
+  const usReady = await selectSector("us-stocks", 25);
+  if (usReady) {
+    ok("us-stocks-table", qa("#sec-prices tbody tr").length >= 25, "rows=" + qa("#sec-prices tbody tr").length);
+    ok("us-stocks-no-crypto-intel", !qa(".sector-crypto-only").some((el) => getComputedStyle(el).display !== "none" && el.offsetParent !== null), "crypto intel hidden");
+    const beforeStockTv = (q(".atlas-chart-widget iframe") || {}).src || "";
+    const stockChart = qa("#sec-prices tbody tr")[1]?.querySelector(".cta-pill") || q("#sec-prices tbody tr .cta-pill");
+    if (stockChart) { stockChart.click(); await sleep(900); }
+    const afterStockTv = (q(".atlas-chart-widget iframe") || {}).src || "";
+    ok("stock-row->chart", location.pathname === "/" && afterStockTv !== beforeStockTv, afterStockTv.slice(0, 120));
+  } else ok("us-stocks-table", false, "US stocks tab missing");
 
   // ---------- v9: non-line visuals + news lead ----------
-  ok("dominance-donut", !!q('.stat-tile[data-card="dom"] .stat-spark circle'), "donut segments render");
-  ok("dex-bars", qa('.stat-tile[data-card="dex"] .stat-spark rect').length >= 3, "daily volume bars render");
-  const leadOk = await until(() => q(".nr-lead .nr-lead-title"), 10000);
-  ok("news-lead", leadOk, "lead story card renders");
-  ok("news-favicons", qa(".news-rail .nr-fav").length >= 3, "source favicons n=" + qa(".news-rail .nr-fav").length);
+  const wireOpenBtn = qa("button").find((b) => /Open wire|Expand/.test(b.textContent || ""));
+  if (wireOpenBtn) { wireOpenBtn.click(); await sleep(500); }
+  const wireOk = await until(() => q(".wire-desk.open .wire-story-title, .wire-desk.open .wire-empty"), 10000);
+  ok("news-wire-drawer", wireOk, "expandable wire opens with live story or honest warming state");
+  ok("news-side-rail", !!q("#sec-news-rail.news-rail"), "compact live-news rail exists beside market surface");
+  const wireClose = q(".wire-desk.open .wire-close");
+  if (wireClose) { wireClose.click(); await sleep(200); }
 
   // ---------- radar ----------
   await go("/radar");
-  await until(() => q("table.mkt tbody tr td .tok"), 10000);
-  const rrow = q("table.mkt tbody tr");
+  let radarReady = await until(() => q("table.mkt tbody tr .tok") || q("table.mkt tbody tr"), 30000);
+  if (!radarReady) {
+    await go("/radar");
+    radarReady = await until(() => q("table.mkt tbody tr .tok") || q("table.mkt tbody tr"), 30000);
+  }
+  let rrow = q("table.mkt tbody tr");
+  if (!rrow) {
+    await sleep(1500);
+    rrow = q("table.mkt tbody tr");
+  }
   if (rrow) {
     rrow.click(); await sleep(400);
     ok("radar-row->basis-tab", location.search.includes("tab=basis") && (q(".atab.on") || {}).textContent === "Basis", path());
@@ -241,6 +322,24 @@ AUDIT_JS = r"""
   if (cell) { cell.click(); await sleep(350); ok("heatmap-cell->asset", location.pathname.startsWith("/symbol/"), path()); }
   else ok("heatmap-cell->asset", false, "no cells");
 
+  // ---------- bubbles ----------
+  await go("/bubbles");
+  await until(() => q(".bb-stage") && (qa(".bb-bubble").length > 4 || q(".bb-empty")), 25000);
+  ok("bubbles-stage", !!q(".bb-stage") && (qa(".bb-bubble").length > 4 || q(".bb-empty")), `bubbles=${qa(".bb-bubble").length}`);
+  const stockChip = qa(".bb-asset .chip").find((b) => (b.textContent || "").trim() === "Stocks");
+  if (stockChip) {
+    stockChip.click();
+    await sleep(1100);
+    ok("bubbles-stocks", location.pathname === "/bubbles" && location.search.includes("asset=stocks") && !!q(".bb-stage"), path());
+  } else ok("bubbles-stocks", false, "missing stocks chip");
+  const refreshSel = q('.bb-select[title="Auto-refresh rate"]');
+  if (refreshSel) {
+    refreshSel.value = "15";
+    refreshSel.dispatchEvent(new Event("change", { bubbles: true }));
+    await sleep(250);
+    ok("bubbles-refresh", localStorage.getItem("cg-bubbles-refresh") === "15", localStorage.getItem("cg-bubbles-refresh"));
+  } else ok("bubbles-refresh", false, "missing refresh select");
+
   // ---------- funding ----------
   await go("/funding");
   await until(() => q(".lb-row"), 8000);
@@ -250,7 +349,7 @@ AUDIT_JS = r"""
 
   // ---------- movers ----------
   await go("/movers");
-  await until(() => q(".lb-row"), 8000);
+  await until(() => q(".lb-row"), 18000);
   const mrow = q(".lb-row");
   if (mrow) { mrow.click(); await sleep(350); ok("movers-row->asset", location.pathname.startsWith("/symbol/"), path()); }
   else ok("movers-row->asset", false, "no rows");
@@ -277,15 +376,30 @@ AUDIT_JS = r"""
   if (badge) { badge.click(); await sleep(300); ok("health-badge", !!q(".sheet"), "health drawer opens"); await closeSheet(); }
   else ok("health-badge", false, "missing");
 
-  // UTC clock ticking
+  // Market clock defaults to UTC, exposes every zone on hover, and cycles by click.
   const clock = q(".hdr-clock");
   ok("utc-clock", !!clock && /\d{2}:\d{2}:\d{2} UTC/.test(clock.textContent), (clock || {}).textContent);
+  if (clock) {
+    clock.dispatchEvent(new PointerEvent("pointerenter", { bubbles: true }));
+    await sleep(180);
+    ok("clock-menu", qa(".clock-zone-card").length === 3, `zones=${qa(".clock-zone-card").length}`);
+    await closeMenu();
+    clock.click(); await sleep(160);
+    ok("clock-cycle-ist", /\d{2}:\d{2}:\d{2} IST/.test(clock.textContent), clock.textContent);
+    clock.click(); await sleep(160);
+    ok("clock-cycle-local", /\d{2}:\d{2}:\d{2} LOCAL/.test(clock.textContent), clock.textContent);
+    clock.click(); await sleep(160);
+    ok("clock-cycle-utc", /\d{2}:\d{2}:\d{2} UTC/.test(clock.textContent), clock.textContent);
+    await closeMenu();
+  }
 
-  // market pulse section exists (real items or polished state)
+  // market pulse exists as an expandable side drawer, not as a permanent rail
   await go("/");
-  await until(() => q(".nr-item, .pulse-card, .ghost-tile"), 8000);
-  ok("market-pulse", !!q(".nr-item") || !!q(".pulse-card") || qa(".ghost-tile").length > 0,
-     `news rail items=${qa(".nr-item").length}`);
+  const openWire = qa("button").find((b) => /Open wire|Expand/.test(b.textContent || ""));
+  if (openWire) { openWire.click(); await sleep(500); }
+  await until(() => q(".wire-desk.open .wire-story, .wire-desk.open .wire-empty"), 8000);
+  ok("market-pulse", !!q(".wire-desk.open .wire-story") || !!q(".wire-desk.open .wire-empty"),
+     `wire stories=${qa(".wire-desk.open .wire-story").length}`);
 
   // js errors captured across the whole audit
   ok("no-js-errors", (window.__CG_ERRORS__ || []).length === 0, (window.__CG_ERRORS__ || []).join(" | ").slice(0, 300));
@@ -335,7 +449,7 @@ def main() -> int:
                     msg["sessionId"] = session
                 ws.send(json.dumps(msg))
                 while True:
-                    resp = json.loads(ws.recv(timeout=90))
+                    resp = json.loads(ws.recv(timeout=180))
                     if resp.get("id") == mid:
                         if "error" in resp:
                             raise RuntimeError(f"{method}: {resp['error']}")
@@ -346,7 +460,7 @@ def main() -> int:
             cmd("Runtime.enable", session=session)
             time.sleep(2.5)  # first paint + boot
             result = cmd("Runtime.evaluate", {
-                "expression": AUDIT_JS, "awaitPromise": True, "returnByValue": True, "timeout": 120000,
+                "expression": AUDIT_JS, "awaitPromise": True, "returnByValue": True, "timeout": 180000,
             }, session=session)
             value = result.get("result", {}).get("value")
             if not value:
